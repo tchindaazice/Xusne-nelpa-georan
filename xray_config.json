@@ -1,0 +1,38 @@
+{
+  "log": {
+    "loglevel": "warning"
+  },
+  "inbounds": [
+    {
+      "listen": "127.0.0.1",
+      "port": 10086,
+      "protocol": "vless",
+      "settings": {
+        "clients": [
+          {
+            "id": "e3a478b2-5e1b-4cf7-8b09-1a2b3c4d5e6f",
+            "email": "nexus-root@nexustunnel",
+            "level": 0
+          },
+          {
+            "id": "a1b2c3d4-e5f6-4a1b-8c2d-3e4f5a6b7c8d",
+            "email": "compteazice_ohwn@nexus",
+            "level": 0
+          }
+        ],
+        "decryption": "none"
+      },
+      "streamSettings": {
+        "network": "ws",
+        "wsSettings": {
+          "path": "/nexustunnel"
+        }
+      }
+    }
+  ],
+  "outbounds": [
+    {
+      "protocol": "freedom"
+    }
+  ]
+}

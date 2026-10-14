@@ -1,0 +1,6 @@
+{
+  "name": "Nexus Tunnel - Déploiement & Gestionnaire VLESS",
+  "description": "Déploiement en temps réel de l'image Docker docker.io/nextl/nexus-tunnel, serveur Xray VLESS over WebSocket avec configuration client, QR codes et diagnostics.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

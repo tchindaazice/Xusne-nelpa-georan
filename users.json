@@ -1,0 +1,30 @@
+[
+  {
+    "id": "usr_default_root",
+    "name": "Compte Principal (Nexus)",
+    "uuid": "e3a478b2-5e1b-4cf7-8b09-1a2b3c4d5e6f",
+    "email": "nexus-root@nexustunnel",
+    "isEnabled": true,
+    "createdAt": "2026-10-14T09:00:00.000Z",
+    "expiresAt": null,
+    "quotaBytes": 0,
+    "usedBytes": 0,
+    "maxIps": 0,
+    "notes": "Compte d'origine extrait de l'image docker.io/nextl/nexus-tunnel (Quota illimité)",
+    "lastSeenAt": null
+  },
+  {
+    "id": "usr_lft47h7",
+    "name": "Compte Azice",
+    "uuid": "a1b2c3d4-e5f6-4a1b-8c2d-3e4f5a6b7c8d",
+    "email": "compteazice_ohwn@nexus",
+    "isEnabled": true,
+    "createdAt": "2026-10-14T17:26:26.910Z",
+    "expiresAt": "2026-12-31T23:59:59.000Z",
+    "quotaBytes": 5368709120,
+    "usedBytes": 0,
+    "maxIps": 2,
+    "notes": "Compte VIP 5 Go / 2 appareils max",
+    "lastSeenAt": null
+  }
+]
