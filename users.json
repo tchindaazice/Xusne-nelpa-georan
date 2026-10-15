@@ -11,7 +11,8 @@
     "usedBytes": 0,
     "maxIps": 0,
     "notes": "Compte d'origine extrait de l'image docker.io/nextl/nexus-tunnel (Quota illimité)",
-    "lastSeenAt": null
+    "lastSeenAt": null,
+    "token": "NEXUS-VLESS-VCWAUCVT"
   },
   {
     "id": "usr_lft47h7",
@@ -25,6 +26,28 @@
     "usedBytes": 0,
     "maxIps": 2,
     "notes": "Compte VIP 5 Go / 2 appareils max",
+    "lastSeenAt": null,
+    "token": "NEXUS-VLESS-V6JHM5QQ"
+  },
+  {
+    "id": "usr_adyffaw",
+    "name": "Tchinda Azice (Mobile)",
+    "uuid": "c456d366-9844-4895-89d3-753697191348",
+    "token": "NEXUS-VLESS-FNLVMFLN",
+    "email": "tchindaazicemobile_1r25@nexus",
+    "isEnabled": true,
+    "createdAt": "2026-10-15T18:16:12.420Z",
+    "expiresAt": "2026-11-30T23:59:59.000Z",
+    "quotaBytes": 10737418240,
+    "usedBytes": 0,
+    "maxIps": 2,
+    "notes": "Approuvé depuis l'APK (Cameroun, WHATSAPP: +237690123456)",
+    "deviceId": "dev_test_samsung_s22",
+    "deviceModel": "Samsung Galaxy S22 Ultra",
+    "country": "Cameroun",
+    "countryCode": "CM",
+    "channel": "WHATSAPP",
+    "contactDetail": "+237690123456",
     "lastSeenAt": null
   }
 ]

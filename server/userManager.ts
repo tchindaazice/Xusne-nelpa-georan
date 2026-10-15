@@ -7,6 +7,7 @@ export interface UserAccount {
   name: string;
   uuid: string;
   email: string;
+  token: string; // Activation token for Android app
   isEnabled: boolean;
   createdAt: string;
   expiresAt: string | null; // ISO date string or null for unlimited
@@ -15,6 +16,13 @@ export interface UserAccount {
   maxIps: number; // 0 = unlimited, 1 = 1 IP, 2 = 2 IPs, etc.
   notes?: string;
   lastSeenAt: string | null;
+  // Optional registration metadata from APK
+  deviceId?: string;
+  deviceModel?: string;
+  country?: string;
+  countryCode?: string;
+  channel?: string;
+  contactDetail?: string;
 }
 
 export interface UserAccountWithStats extends UserAccount {
@@ -43,7 +51,21 @@ export interface ActiveSession {
   proxySocket: any;
 }
 
-const USERS_FILE_PATH = path.resolve(process.cwd(), 'users.json');
+const DATA_DIR = path.resolve(process.cwd(), 'data');
+const USERS_FILE_PATH = path.resolve(DATA_DIR, 'users.json');
+const USERS_BACKUP_PATH = path.resolve(process.cwd(), 'users.json');
+
+function ensureDataDir() {
+  if (!fs.existsSync(DATA_DIR)) {
+    fs.mkdirSync(DATA_DIR, { recursive: true });
+  }
+}
+
+function atomicWrite(filePath: string, data: string) {
+  const tmp = `${filePath}.tmp.${Date.now()}`;
+  fs.writeFileSync(tmp, data, 'utf-8');
+  fs.renameSync(tmp, filePath);
+}
 
 // In-memory active sessions Map<sessionId, ActiveSession>
 export const activeSessions = new Map<string, ActiveSession>();
@@ -56,6 +78,15 @@ export function generateUuidV4(): string {
   });
 }
 
+export function generateActivationToken(prefix = 'NEXUS-VLESS'): string {
+  const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
+  let rand = '';
+  for (let i = 0; i < 8; i++) {
+    rand += chars.charAt(Math.floor(Math.random() * chars.length));
+  }
+  return `${prefix}-${rand}`;
+}
+
 export function formatBytes(bytes: number): string {
   if (bytes <= 0) return '0 Mo';
   const k = 1024;
@@ -66,22 +97,89 @@ export function formatBytes(bytes: number): string {
 }
 
 export function loadUsers(): UserAccount[] {
+  ensureDataDir();
+  let users: UserAccount[] = [];
+
+  // Try loading from primary path: data/users.json
   try {
     if (fs.existsSync(USERS_FILE_PATH)) {
       const data = fs.readFileSync(USERS_FILE_PATH, 'utf-8');
-      return JSON.parse(data);
+      const parsed = JSON.parse(data);
+      if (Array.isArray(parsed) && parsed.length > 0) {
+        users = parsed;
+      }
     }
   } catch (err) {
-    console.error('[UserManager] Failed to read users.json:', err);
+    console.error('[UserManager] Failed reading data/users.json:', err);
   }
-  return [];
+
+  // Fallback to backup: users.json in root
+  if (users.length === 0) {
+    try {
+      if (fs.existsSync(USERS_BACKUP_PATH)) {
+        const data = fs.readFileSync(USERS_BACKUP_PATH, 'utf-8');
+        const parsed = JSON.parse(data);
+        if (Array.isArray(parsed) && parsed.length > 0) {
+          users = parsed;
+          saveUsers(users); // sync back to primary
+        }
+      }
+    } catch (err) {
+      console.error('[UserManager] Failed reading backup users.json:', err);
+    }
+  }
+
+  // Ensure default root user exists if empty
+  if (users.length === 0) {
+    users = [
+      {
+        id: 'usr_default_root',
+        name: 'Compte Principal (Nexus)',
+        uuid: 'e3a478b2-5e1b-4cf7-8b09-1a2b3c4d5e6f',
+        email: 'nexus-root@nexustunnel',
+        token: 'NEXUS-VLESS-ROOT01',
+        isEnabled: true,
+        createdAt: '2026-10-14T09:00:00.000Z',
+        expiresAt: null,
+        quotaBytes: 0,
+        usedBytes: 0,
+        maxIps: 0,
+        notes: "Compte d'origine extrait de l'image docker.io/nextl/nexus-tunnel (Quota illimité)",
+        lastSeenAt: null,
+      },
+    ];
+    saveUsers(users);
+  }
+
+  // Make sure each user has a valid token
+  let modified = false;
+  for (const u of users) {
+    if (!u.token) {
+      u.token = generateActivationToken();
+      modified = true;
+    }
+  }
+  if (modified) {
+    saveUsers(users);
+  }
+
+  return users;
 }
 
 export function saveUsers(users: UserAccount[]): void {
+  ensureDataDir();
+  const serialized = JSON.stringify(users, null, 2);
   try {
-    fs.writeFileSync(USERS_FILE_PATH, JSON.stringify(users, null, 2), 'utf-8');
+    atomicWrite(USERS_FILE_PATH, serialized);
   } catch (err) {
-    console.error('[UserManager] Failed to save users.json:', err);
+    console.error('[UserManager] Failed writing data/users.json:', err);
+  }
+
+  // Mirror to root backup users.json
+  try {
+    fs.writeFileSync(USERS_BACKUP_PATH, serialized, 'utf-8');
+  } catch (err) {
+    // ignore
   }
 }
 
@@ -93,6 +191,14 @@ export function getUserByUuid(uuid: string): UserAccount | undefined {
 export function getUserById(id: string): UserAccount | undefined {
   const users = loadUsers();
   return users.find((u) => u.id === id);
+}
+
+export function getUserByToken(token: string): UserAccount | undefined {
+  const users = loadUsers();
+  const clean = token.trim().toUpperCase();
+  return users.find(
+    (u) => (u.token || '').trim().toUpperCase() === clean || (u.uuid || '').trim().toUpperCase() === clean
+  );
 }
 
 export function isUserExpired(user: UserAccount): boolean {
@@ -151,7 +257,6 @@ export function parseVlessUuidFromWsFrame(buffer: Buffer): string | null {
   const isWs = (firstByte & 0x0f) === 2 || (firstByte & 0x0f) === 1;
   const isMasked = (buffer[1] & 0x80) !== 0;
   if (!isWs && buffer[0] === 0x00 && buffer.length >= 17) {
-    // Raw VLESS without WS frame wrapper
     const hex = buffer.slice(1, 17).toString('hex');
     return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20, 32)}`;
   }

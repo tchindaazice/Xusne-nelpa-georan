@@ -4,6 +4,7 @@ import httpProxy from 'http-proxy';
 import { spawn, ChildProcess } from 'child_process';
 import path from 'path';
 import fs from 'fs';
+import cors from 'cors';
 import { createServer as createViteServer } from 'vite';
 import {
   loadUsers,
@@ -11,7 +12,9 @@ import {
   getUsersWithStats,
   getUserById,
   getUserByUuid,
+  getUserByToken,
   generateUuidV4,
+  generateActivationToken,
   generateClientConfigs,
   activeSessions,
   addTrafficToUser,
@@ -23,6 +26,16 @@ import {
   UserAccount,
   ActiveSession,
 } from './server/userManager.ts';
+import {
+  loadMembershipRequests,
+  findRequestByDeviceOrContact,
+  addOrUpdateRequest,
+  approveRequest,
+  rejectRequest,
+  deleteRequest,
+  MembershipRequest,
+} from './server/membershipManager.ts';
+import { ensureXrayBinary } from './server/ensureXray.ts';
 
 const app = express();
 const server = http.createServer(app);
@@ -31,6 +44,8 @@ const XRAY_BIN = path.resolve(process.cwd(), 'bin', 'xray');
 const XRAY_CONFIG_PATH = path.resolve(process.cwd(), 'xray_config.json');
 const XRAY_DATA_DIR = path.resolve(process.cwd(), 'xray_data');
 
+// Enable CORS for all routes (essential for the Android APK and external clients)
+app.use(cors({ origin: '*', methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'] }));
 app.use(express.json());
 
 // Proxy for WebSocket upgrade to Xray internal port
@@ -82,7 +97,6 @@ function writeXrayConfigFile() {
       level: 0,
     }));
 
-  // Fallback to at least one valid client if none are active
   if (activeClients.length === 0) {
     activeClients.push({
       id: 'e3a478b2-5e1b-4cf7-8b09-1a2b3c4d5e6f',
@@ -126,6 +140,8 @@ function startXrayProcess() {
   if (xrayProcess && !xrayProcess.killed) {
     return;
   }
+
+  ensureXrayBinary();
 
   if (!fs.existsSync(XRAY_BIN)) {
     xrayStatus = 'error';
@@ -212,7 +228,6 @@ function stopXrayProcess(): Promise<void> {
   });
 }
 
-// Reload Xray config dynamically
 async function reloadXray() {
   await stopXrayProcess();
   startXrayProcess();
@@ -262,7 +277,6 @@ server.on('upgrade', (req, clientSocket: any, head) => {
 
   let firstFrameHandled = false;
 
-  // Intercept incoming client traffic to parse UUID and enforce limits
   clientSocket.on('data', (chunk: Buffer) => {
     session.bytesUp += chunk.length;
 
@@ -276,7 +290,6 @@ server.on('upgrade', (req, clientSocket: any, head) => {
           session.userId = user.id;
           session.userName = user.name;
 
-          // 1. Check account active
           if (!user.isEnabled) {
             addLog(
               'warn',
@@ -286,7 +299,6 @@ server.on('upgrade', (req, clientSocket: any, head) => {
             return;
           }
 
-          // 2. Check expiration
           if (isUserExpired(user)) {
             addLog(
               'warn',
@@ -298,7 +310,6 @@ server.on('upgrade', (req, clientSocket: any, head) => {
             return;
           }
 
-          // 3. Check data quota
           if (isUserQuotaExceeded(user)) {
             addLog(
               'warn',
@@ -310,7 +321,6 @@ server.on('upgrade', (req, clientSocket: any, head) => {
             return;
           }
 
-          // 4. Check concurrent IP limit
           if (user.maxIps > 0) {
             const currentActiveIps = getActiveIpsForUser(user.id);
             if (currentActiveIps.length > user.maxIps && !currentActiveIps.includes(clientIp)) {
@@ -333,11 +343,8 @@ server.on('upgrade', (req, clientSocket: any, head) => {
       }
     }
 
-    // Add traffic to user account
     if (session.userId) {
       addTrafficToUser(session.userId, chunk.length);
-
-      // Check quota during streaming
       const user = getUserById(session.userId);
       if (user && isUserQuotaExceeded(user)) {
         addLog('warn', `[Quota Atteint en cours de session] Déconnexion immédiate de "${user.name}".`);
@@ -363,7 +370,6 @@ server.on('upgrade', (req, clientSocket: any, head) => {
   clientSocket.on('close', cleanup);
   clientSocket.on('error', cleanup);
 
-  // Forward to Xray internal port via http-proxy
   proxy.ws(
     req,
     clientSocket,
@@ -380,10 +386,9 @@ server.on('upgrade', (req, clientSocket: any, head) => {
   );
 });
 
-// Intercept proxy socket to measure downlink traffic
+// Proxy downlink data interception
 proxy.on('open', (proxySocket: any) => {
   proxySocket.on('data', (chunk: Buffer) => {
-    // Distribute downlink bytes to matching active session
     for (const session of activeSessions.values()) {
       if (!session.proxySocket) {
         session.proxySocket = proxySocket;
@@ -412,7 +417,374 @@ app.get(tunnelWsPath, (_req, res) => {
   });
 });
 
-// API: Server Status & Global Metrics
+// ==========================================
+// ANDROID APK INTEGRATION ENDPOINTS (tchindaazice/App)
+// ==========================================
+
+// 1. Submit Membership Request from Android APK
+app.post(['/api/membership/request', '/api/membership/requests'], (req, res) => {
+  const {
+    fullName,
+    country,
+    countryCode,
+    channel,
+    contactDetail,
+    deviceId,
+    deviceModel,
+    androidVersion,
+    timestamp,
+  } = req.body;
+
+  if (!fullName || !contactDetail || !deviceId) {
+    res.status(400).json({
+      success: false,
+      message: 'Les champs nom complet, contact et identifiant appareil sont requis.',
+      status: 'NOT_SUBMITTED',
+    });
+    return;
+  }
+
+  // Check if this device or contact is already approved
+  const existingReq = findRequestByDeviceOrContact(deviceId, contactDetail);
+  if (existingReq && existingReq.status === 'APPROVED' && existingReq.approvedUserId) {
+    const user = getUserById(existingReq.approvedUserId);
+    if (user && user.isEnabled) {
+      res.json({
+        success: true,
+        message: 'Votre compte est déjà approuvé et actif!',
+        status: 'APPROVED',
+        uid: user.uuid,
+        token: user.token,
+        quotaBytes: user.quotaBytes,
+        expirationTimestamp: user.expiresAt ? new Date(user.expiresAt).getTime() : null,
+      });
+      return;
+    }
+  }
+
+  const { request, isNew } = addOrUpdateRequest({
+    fullName,
+    country: country || 'Cameroun',
+    countryCode: countryCode || 'CM',
+    channel: channel || 'WHATSAPP',
+    contactDetail,
+    deviceId,
+    deviceModel: deviceModel || 'Android',
+    androidVersion: androidVersion || 'Android',
+    timestamp: timestamp || Date.now(),
+  });
+
+  addLog(
+    'info',
+    `[APK Demande Adhésion] ${isNew ? 'Nouvelle demande' : 'Mise à jour demande'} reçue de "${fullName}" (${contactDetail}, ${country}) sur appareil ${deviceModel}`
+  );
+
+  res.json({
+    success: true,
+    message: "Demande reçue. En attente d'approbation par un administrateur sur le Web Panel.",
+    status: request.status, // "PENDING"
+    uid: null,
+    token: null,
+    quotaBytes: null,
+    expirationTimestamp: null,
+  });
+});
+
+// 2. Poll Membership Status from Android APK
+app.get('/api/membership/status', (req, res) => {
+  const deviceId = (req.query.deviceId as string) || '';
+  const contact = (req.query.contact as string) || '';
+
+  if (!deviceId && !contact) {
+    res.status(400).json({
+      success: false,
+      message: 'Paramètre deviceId ou contact manquant.',
+      status: 'NOT_SUBMITTED',
+    });
+    return;
+  }
+
+  const request = findRequestByDeviceOrContact(deviceId, contact);
+  if (!request) {
+    res.json({
+      success: false,
+      message: 'Aucune demande trouvée pour cet appareil.',
+      status: 'NOT_SUBMITTED',
+    });
+    return;
+  }
+
+  if (request.status === 'APPROVED') {
+    let user: UserAccount | undefined;
+    if (request.approvedUserId) {
+      user = getUserById(request.approvedUserId);
+    }
+    if (!user && request.assignedToken) {
+      user = getUserByToken(request.assignedToken);
+    }
+
+    if (user) {
+      res.json({
+        success: true,
+        message: 'Demande approuvée par l’administrateur ! Bienvenue sur Nexus Tunnel.',
+        status: 'APPROVED',
+        uid: user.uuid,
+        token: user.token,
+        quotaBytes: user.quotaBytes,
+        expirationTimestamp: user.expiresAt ? new Date(user.expiresAt).getTime() : null,
+      });
+      return;
+    }
+  }
+
+  if (request.status === 'REJECTED') {
+    res.json({
+      success: false,
+      message: 'Votre demande d’adhésion a été refusée par l’administrateur.',
+      status: 'REJECTED',
+    });
+    return;
+  }
+
+  res.json({
+    success: true,
+    message: 'Votre demande est en cours d’examen par l’administrateur...',
+    status: 'PENDING',
+  });
+});
+
+// 3. Verify Token from Android APK
+app.post(['/api/token/verify', '/api/token/activate'], (req, res) => {
+  const { token, deviceId } = req.body;
+
+  if (!token || !token.trim()) {
+    res.status(400).json({
+      success: false,
+      message: 'Token requis.',
+      status: 'REJECTED',
+    });
+    return;
+  }
+
+  const user = getUserByToken(token);
+  if (!user) {
+    addLog('warn', `[APK Token] Tentative de vérification échouée pour le token: "${token}"`);
+    res.status(404).json({
+      success: false,
+      message: 'Token invalide ou introuvable.',
+      status: 'REJECTED',
+    });
+    return;
+  }
+
+  if (!user.isEnabled) {
+    res.status(403).json({
+      success: false,
+      message: 'Ce compte est actuellement désactivé.',
+      status: 'REJECTED',
+    });
+    return;
+  }
+
+  if (isUserExpired(user)) {
+    res.status(403).json({
+      success: false,
+      message: 'Ce compte a expiré.',
+      status: 'REJECTED',
+    });
+    return;
+  }
+
+  if (isUserQuotaExceeded(user)) {
+    res.status(403).json({
+      success: false,
+      message: 'Le quota de données de ce compte est épuisé.',
+      status: 'REJECTED',
+    });
+    return;
+  }
+
+  // Bind deviceId if not bound yet
+  if (deviceId && !user.deviceId) {
+    user.deviceId = deviceId;
+    const users = loadUsers();
+    const idx = users.findIndex((u) => u.id === user.id);
+    if (idx !== -1) {
+      users[idx].deviceId = deviceId;
+      saveUsers(users);
+    }
+  }
+
+  addLog('info', `[APK Token] Token validé avec succès pour "${user.name}" (Appareil: ${deviceId || 'N/A'})`);
+
+  res.json({
+    success: true,
+    message: 'Token validé avec succès!',
+    status: 'APPROVED',
+    uid: user.uuid,
+    token: user.token,
+    quotaBytes: user.quotaBytes,
+    expirationTimestamp: user.expiresAt ? new Date(user.expiresAt).getTime() : null,
+  });
+});
+
+// 4. Real-time Quota Sync from Android APK
+app.get('/api/user/quota', (req, res) => {
+  const uid = (req.query.uid as string) || '';
+  const authHeader = req.headers['authorization'] || '';
+  let tokenFromHeader = '';
+  if (authHeader.startsWith('Bearer ')) {
+    tokenFromHeader = authHeader.substring(7).trim();
+  }
+
+  let user: UserAccount | undefined;
+  if (uid) {
+    user = getUserByUuid(uid);
+  }
+  if (!user && tokenFromHeader) {
+    user = getUserByToken(tokenFromHeader);
+  }
+
+  if (!user) {
+    res.status(404).json({
+      success: false,
+      message: 'Compte introuvable pour ce quota.',
+      uid: '',
+      quotaTotalBytes: 0,
+      quotaUsedBytes: 0,
+      expirationTimestamp: 0,
+      isValid: false,
+    });
+    return;
+  }
+
+  const isValid = user.isEnabled && !isUserExpired(user) && !isUserQuotaExceeded(user);
+
+  res.json({
+    success: true,
+    uid: user.uuid,
+    quotaTotalBytes: user.quotaBytes,
+    quotaUsedBytes: user.usedBytes,
+    expirationTimestamp: user.expiresAt ? new Date(user.expiresAt).getTime() : 0,
+    isValid,
+  });
+});
+
+// 5. Server Info & VLESS parameters discovery for APK
+app.get('/api/app/config', (req, res) => {
+  const host = getHostname(req);
+  res.json({
+    webPanelUrl: `https://${host}`,
+    serverAddress: host,
+    serverPort: 443,
+    transport: 'ws',
+    wsPath: tunnelWsPath,
+    security: 'tls',
+    sni: host,
+    alpn: 'http/1.1',
+    protocol: 'vless',
+    dockerImage: 'docker.io/nextl/nexus-tunnel',
+    status: xrayStatus,
+  });
+});
+
+// ==========================================
+// ADMIN ENDPOINTS (MEMBERSHIP APPROVALS)
+// ==========================================
+
+app.get('/api/admin/requests', (_req, res) => {
+  const requests = loadMembershipRequests();
+  const pendingCount = requests.filter((r) => r.status === 'PENDING').length;
+  res.json({ requests, pendingCount });
+});
+
+app.post('/api/admin/requests/:id/approve', async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { name, uuid, token, quotaBytes, expiresAt, maxIps, notes } = req.body;
+
+    const requests = loadMembershipRequests();
+    const reqItem = requests.find((r) => r.id === id);
+    if (!reqItem) {
+      res.status(404).json({ error: 'Demande introuvable.' });
+      return;
+    }
+
+    const finalUuid = uuid && uuid.trim() ? uuid.trim().toLowerCase() : generateUuidV4();
+    const finalToken = token && token.trim() ? token.trim().toUpperCase() : generateActivationToken();
+    const finalName = name && name.trim() ? name.trim() : reqItem.fullName;
+
+    const users = loadUsers();
+    if (users.some((u) => u.uuid.toLowerCase() === finalUuid)) {
+      res.status(400).json({ error: 'Cet UUID est déjà attribué à un autre compte.' });
+      return;
+    }
+
+    const newUser: UserAccount = {
+      id: 'usr_' + Math.random().toString(36).substring(2, 9),
+      name: finalName,
+      uuid: finalUuid,
+      token: finalToken,
+      email: `${finalName.toLowerCase().replace(/[^a-z0-9]/g, '')}_${Math.random().toString(36).slice(2, 6)}@nexus`,
+      isEnabled: true,
+      createdAt: new Date().toISOString(),
+      expiresAt: expiresAt ? new Date(expiresAt).toISOString() : null,
+      quotaBytes: Number(quotaBytes) || 0,
+      usedBytes: 0,
+      maxIps: Number(maxIps) || 0,
+      notes: notes || `Approuvé depuis l'APK (${reqItem.country}, ${reqItem.channel}: ${reqItem.contactDetail})`,
+      deviceId: reqItem.deviceId,
+      deviceModel: reqItem.deviceModel,
+      country: reqItem.country,
+      countryCode: reqItem.countryCode,
+      channel: reqItem.channel,
+      contactDetail: reqItem.contactDetail,
+      lastSeenAt: null,
+    };
+
+    users.push(newUser);
+    saveUsers(users);
+
+    approveRequest(id, newUser.id, finalToken);
+
+    addLog(
+      'info',
+      `[Demande Approuvée] Demande de "${reqItem.fullName}" approuvée! Compte créé: "${newUser.name}", UUID: ${newUser.uuid}, Token: ${finalToken}`
+    );
+
+    await reloadXray();
+
+    res.json({ success: true, user: newUser, request: reqItem });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.post('/api/admin/requests/:id/reject', (req, res) => {
+  const { id } = req.params;
+  const rejected = rejectRequest(id);
+  if (!rejected) {
+    res.status(404).json({ error: 'Demande introuvable.' });
+    return;
+  }
+  addLog('warn', `[Demande Refusée] Demande #${id} refusée par l'administrateur.`);
+  res.json({ success: true, request: rejected });
+});
+
+app.delete('/api/admin/requests/:id', (req, res) => {
+  const { id } = req.params;
+  const deleted = deleteRequest(id);
+  if (!deleted) {
+    res.status(404).json({ error: 'Demande introuvable.' });
+    return;
+  }
+  res.json({ success: true, message: 'Demande supprimée.' });
+});
+
+// ==========================================
+// STANDARD SYSTEM & USERS API
+// ==========================================
+
 app.get('/api/status', (req, res) => {
   const host = getHostname(req);
   const uptimeSeconds =
@@ -423,6 +795,8 @@ app.get('/api/status', (req, res) => {
   const users = getUsersWithStats();
   const onlineUsers = users.filter((u) => u.isOnline).length;
   const totalUsedBytes = users.reduce((acc, u) => acc + u.usedBytes, 0);
+  const requests = loadMembershipRequests();
+  const pendingRequests = requests.filter((r) => r.status === 'PENDING').length;
 
   res.json({
     status: xrayStatus,
@@ -441,12 +815,12 @@ app.get('/api/status', (req, res) => {
       activeSessions: activeSessions.size,
       totalHistoricalConnections: totalHistoricalWsConnections,
       totalBandwidthUsed: formatBytes(totalUsedBytes),
+      pendingRequestsCount: pendingRequests,
       memoryUsage: process.memoryUsage(),
     },
   });
 });
 
-// API: Users Management (CRUD)
 app.get('/api/users', (_req, res) => {
   const users = getUsersWithStats();
   res.json({ users });
@@ -454,7 +828,7 @@ app.get('/api/users', (_req, res) => {
 
 app.post('/api/users', async (req, res) => {
   try {
-    const { name, uuid, quotaBytes, expiresAt, maxIps, notes } = req.body;
+    const { name, uuid, token, quotaBytes, expiresAt, maxIps, notes } = req.body;
 
     if (!name || !name.trim()) {
       res.status(400).json({ error: 'Le nom du compte est obligatoire.' });
@@ -462,8 +836,8 @@ app.post('/api/users', async (req, res) => {
     }
 
     const finalUuid = uuid && uuid.trim() ? uuid.trim().toLowerCase() : generateUuidV4();
+    const finalToken = token && token.trim() ? token.trim().toUpperCase() : generateActivationToken();
 
-    // Verify UUID regex
     const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
     if (!uuidRegex.test(finalUuid)) {
       res.status(400).json({ error: "L'UUID fourni est invalide (format standard UUIDv4 attendu)." });
@@ -480,6 +854,7 @@ app.post('/api/users', async (req, res) => {
       id: 'usr_' + Math.random().toString(36).substring(2, 9),
       name: name.trim(),
       uuid: finalUuid,
+      token: finalToken,
       email: `${name.toLowerCase().replace(/[^a-z0-9]/g, '')}_${Math.random().toString(36).slice(2, 6)}@nexus`,
       isEnabled: true,
       createdAt: new Date().toISOString(),
@@ -494,7 +869,7 @@ app.post('/api/users', async (req, res) => {
     users.push(newUser);
     saveUsers(users);
 
-    addLog('info', `Nouveau compte créé : "${newUser.name}" (UUID: ${newUser.uuid})`);
+    addLog('info', `Nouveau compte créé : "${newUser.name}" (UUID: ${newUser.uuid}, Token: ${finalToken})`);
     await reloadXray();
 
     res.status(201).json({ success: true, user: newUser });
@@ -506,7 +881,7 @@ app.post('/api/users', async (req, res) => {
 app.put('/api/users/:id', async (req, res) => {
   try {
     const { id } = req.params;
-    const { name, uuid, quotaBytes, expiresAt, maxIps, notes, isEnabled } = req.body;
+    const { name, uuid, token, quotaBytes, expiresAt, maxIps, notes, isEnabled } = req.body;
 
     const users = loadUsers();
     const userIndex = users.findIndex((u) => u.id === id);
@@ -527,6 +902,7 @@ app.put('/api/users/:id', async (req, res) => {
       }
       existingUser.uuid = trimmedUuid;
     }
+    if (token) existingUser.token = token.trim().toUpperCase();
     if (quotaBytes !== undefined) existingUser.quotaBytes = Number(quotaBytes) || 0;
     if (expiresAt !== undefined) {
       existingUser.expiresAt = expiresAt ? new Date(expiresAt).toISOString() : null;
@@ -556,7 +932,6 @@ app.delete('/api/users/:id', async (req, res) => {
       return;
     }
 
-    // Disconnect active sessions
     for (const [sessId, session] of activeSessions.entries()) {
       if (session.userId === id) {
         session.clientSocket?.destroy();
@@ -603,7 +978,6 @@ app.post('/api/users/:id/toggle', async (req, res) => {
   user.isEnabled = !user.isEnabled;
   saveUsers(users);
 
-  // If disabled, kill active sessions
   if (!user.isEnabled) {
     for (const [sessId, session] of activeSessions.entries()) {
       if (session.userId === id) {
@@ -631,7 +1005,6 @@ app.get('/api/users/:id/configs', async (req, res) => {
   res.json(configs);
 });
 
-// API: Active Sessions
 app.get('/api/sessions', (_req, res) => {
   const list = Array.from(activeSessions.values()).map((s) => ({
     id: s.id,
@@ -663,12 +1036,10 @@ app.post('/api/sessions/:id/disconnect', (req, res) => {
   res.json({ success: true, message: 'Session terminée.' });
 });
 
-// API: Generate UUID
 app.get('/api/uuid/generate', (_req, res) => {
-  res.json({ uuid: generateUuidV4() });
+  res.json({ uuid: generateUuidV4(), token: generateActivationToken() });
 });
 
-// API: Logs & Control
 app.get('/api/logs', (_req, res) => {
   res.json({ logs: logBuffer });
 });
@@ -789,6 +1160,7 @@ async function initFrontend() {
   server.listen(PORT, '0.0.0.0', () => {
     console.log(`[Nexus Tunnel] Serveur Web prêt sur http://0.0.0.0:${PORT}`);
     console.log(`[Nexus Tunnel] Endpoint VLESS WS : ${tunnelWsPath}`);
+    console.log(`[Nexus Tunnel] API APK : /api/membership/request & /api/token/verify`);
   });
 }
 

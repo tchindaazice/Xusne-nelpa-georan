@@ -42,13 +42,23 @@ import {
   Filter,
   X,
   ChevronDown,
-  Info
+  Info,
+  Inbox,
+  UserCheck,
+  UserX,
+  Key,
+  MessageSquare,
+  Send,
+  SmartphoneNfc,
+  CheckCircle,
+  HelpCircle
 } from 'lucide-react';
 
 interface UserAccount {
   id: string;
   name: string;
   uuid: string;
+  token: string;
   email: string;
   isEnabled: boolean;
   createdAt: string;
@@ -58,6 +68,12 @@ interface UserAccount {
   maxIps: number;
   notes?: string;
   lastSeenAt: string | null;
+  deviceId?: string;
+  deviceModel?: string;
+  country?: string;
+  countryCode?: string;
+  channel?: string;
+  contactDetail?: string;
   isOnline: boolean;
   activeConnectionsCount: number;
   activeIpsCount: number;
@@ -68,6 +84,24 @@ interface UserAccount {
   percentQuotaUsed: number;
   readableQuota: string;
   readableUsed: string;
+}
+
+interface MembershipRequest {
+  id: string;
+  fullName: string;
+  country: string;
+  countryCode: string;
+  channel: string;
+  contactDetail: string;
+  deviceId: string;
+  deviceModel: string;
+  androidVersion: string;
+  timestamp: number;
+  createdAt: string;
+  status: 'PENDING' | 'APPROVED' | 'REJECTED';
+  approvedUserId?: string | null;
+  assignedToken?: string | null;
+  reviewedAt?: string | null;
 }
 
 interface ActiveSessionItem {
@@ -100,6 +134,7 @@ interface SystemStatus {
     activeSessions: number;
     totalHistoricalConnections: number;
     totalBandwidthUsed: string;
+    pendingRequestsCount: number;
   };
 }
 
@@ -118,15 +153,17 @@ interface UserConfigDetails {
 export default function App() {
   const [status, setStatus] = useState<SystemStatus | null>(null);
   const [users, setUsers] = useState<UserAccount[]>([]);
+  const [requests, setRequests] = useState<MembershipRequest[]>([]);
   const [sessions, setSessions] = useState<ActiveSessionItem[]>([]);
   const [logs, setLogs] = useState<{ timestamp: string; level: string; message: string }[]>([]);
   const [loading, setLoading] = useState(true);
   const [copiedKey, setCopiedKey] = useState<string | null>(null);
 
-  // Tab & Filters
-  const [activeTab, setActiveTab] = useState<'users' | 'sessions' | 'settings' | 'logs'>('users');
+  // Tabs
+  const [activeTab, setActiveTab] = useState<'requests' | 'users' | 'sessions' | 'settings' | 'logs'>('requests');
   const [searchQuery, setSearchQuery] = useState('');
   const [statusFilter, setStatusFilter] = useState<'all' | 'online' | 'offline' | 'expired' | 'quota'>('all');
+  const [requestFilter, setRequestFilter] = useState<'all' | 'pending' | 'approved' | 'rejected'>('all');
 
   // Modals
   const [isUserModalOpen, setIsUserModalOpen] = useState(false);
@@ -134,15 +171,28 @@ export default function App() {
   const [viewingConfigs, setViewingConfigs] = useState<UserConfigDetails | null>(null);
   const [configSubTab, setConfigSubTab] = useState<'vless' | 'clash' | 'singbox' | 'v2rayn'>('vless');
 
-  // User Form State
+  // Approval Modal
+  const [approvingRequest, setApprovingRequest] = useState<MembershipRequest | null>(null);
+  const [approvalName, setApprovalName] = useState('');
+  const [approvalUuid, setApprovalUuid] = useState('');
+  const [approvalToken, setApprovalToken] = useState('');
+  const [approvalQuotaValue, setApprovalQuotaValue] = useState('5');
+  const [approvalQuotaUnit, setApprovalQuotaUnit] = useState<'MO' | 'GO'>('GO');
+  const [approvalIsUnlimitedQuota, setApprovalIsUnlimitedQuota] = useState(false);
+  const [approvalExpiryDays, setApprovalExpiryDays] = useState(30);
+  const [approvalMaxIps, setApprovalMaxIps] = useState(2);
+  const [approvalSubmitting, setApprovalSubmitting] = useState(false);
+
+  // Standard User Form State
   const [formName, setFormName] = useState('');
   const [formUuid, setFormUuid] = useState('');
+  const [formToken, setFormToken] = useState('');
   const [formQuotaUnit, setFormQuotaUnit] = useState<'MO' | 'GO'>('GO');
   const [formQuotaValue, setFormQuotaValue] = useState<string>('5');
   const [formIsUnlimitedQuota, setFormIsUnlimitedQuota] = useState(false);
   const [formExpiryType, setFormExpiryType] = useState<'unlimited' | 'custom'>('unlimited');
   const [formExpiryDate, setFormExpiryDate] = useState<string>('');
-  const [formMaxIps, setFormMaxIps] = useState<number>(0);
+  const [formMaxIps, setFormMaxIps] = useState<number>(2);
   const [formNotes, setFormNotes] = useState('');
   const [formError, setFormError] = useState('');
   const [formSubmitting, setFormSubmitting] = useState(false);
@@ -159,7 +209,7 @@ export default function App() {
   const logsEndRef = useRef<HTMLDivElement>(null);
   const [autoScrollLogs, setAutoScrollLogs] = useState(true);
 
-  // Helper copy
+  // Copy helper
   const handleCopy = (text: string, key: string) => {
     navigator.clipboard.writeText(text);
     setCopiedKey(key);
@@ -182,6 +232,18 @@ export default function App() {
       if (res.ok) {
         const data = await res.json();
         setUsers(data.users || []);
+      }
+    } catch (e) {
+      console.error(e);
+    }
+  };
+
+  const fetchRequests = async () => {
+    try {
+      const res = await fetch('/api/admin/requests');
+      if (res.ok) {
+        const data = await res.json();
+        setRequests(data.requests || []);
       }
     } catch (e) {
       console.error(e);
@@ -213,13 +275,14 @@ export default function App() {
   };
 
   useEffect(() => {
-    Promise.all([fetchStatus(), fetchUsers(), fetchSessions(), fetchLogs()]).finally(() => {
+    Promise.all([fetchStatus(), fetchUsers(), fetchRequests(), fetchSessions(), fetchLogs()]).finally(() => {
       setLoading(false);
     });
 
     const interval = setInterval(() => {
       fetchStatus();
       fetchUsers();
+      fetchRequests();
       fetchSessions();
       fetchLogs();
     }, 3000);
@@ -233,12 +296,13 @@ export default function App() {
     }
   }, [logs, autoScrollLogs]);
 
-  // Generate random UUID
-  const handleGenerateRandomUuid = async () => {
+  // Generate random UUID & Token
+  const handleGenerateRandomCredentials = async () => {
     try {
       const res = await fetch('/api/uuid/generate');
       const data = await res.json();
       setFormUuid(data.uuid);
+      if (data.token) setFormToken(data.token);
     } catch (e) {
       console.error(e);
     }
@@ -248,7 +312,7 @@ export default function App() {
   const openCreateModal = () => {
     setEditingUserId(null);
     setFormName('');
-    handleGenerateRandomUuid();
+    handleGenerateRandomCredentials();
     setFormIsUnlimitedQuota(false);
     setFormQuotaUnit('GO');
     setFormQuotaValue('5');
@@ -265,6 +329,7 @@ export default function App() {
     setEditingUserId(user.id);
     setFormName(user.name);
     setFormUuid(user.uuid);
+    setFormToken(user.token || '');
 
     if (user.quotaBytes <= 0) {
       setFormIsUnlimitedQuota(true);
@@ -298,7 +363,7 @@ export default function App() {
     setIsUserModalOpen(true);
   };
 
-  // Save User (Create or Update)
+  // Save User
   const handleSaveUser = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!formName.trim()) {
@@ -333,6 +398,7 @@ export default function App() {
       const payload = {
         name: formName.trim(),
         uuid: formUuid.trim(),
+        token: formToken.trim(),
         quotaBytes: calculatedQuotaBytes,
         expiresAt: finalExpiresAt,
         maxIps: Number(formMaxIps) || 0,
@@ -365,12 +431,95 @@ export default function App() {
     }
   };
 
-  // Quick Expiry helper (+7d, +30d, +90d, +1y)
-  const setQuickExpiry = (days: number) => {
-    setFormExpiryType('custom');
-    const d = new Date();
-    d.setDate(d.getDate() + days);
-    setFormExpiryDate(d.toISOString().split('T')[0]);
+  // Open Approval Modal
+  const openApprovalModal = async (req: MembershipRequest) => {
+    setApprovingRequest(req);
+    setApprovalName(req.fullName);
+    setApprovalIsUnlimitedQuota(false);
+    setApprovalQuotaValue('5');
+    setApprovalQuotaUnit('GO');
+    setApprovalExpiryDays(30);
+    setApprovalMaxIps(2);
+
+    try {
+      const res = await fetch('/api/uuid/generate');
+      const data = await res.json();
+      setApprovalUuid(data.uuid);
+      setApprovalToken(data.token);
+    } catch (e) {
+      console.error(e);
+    }
+  };
+
+  // Submit Approval
+  const handleApproveRequest = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!approvingRequest) return;
+    setApprovalSubmitting(true);
+
+    let calculatedQuotaBytes = 0;
+    if (!approvalIsUnlimitedQuota) {
+      const val = parseFloat(approvalQuotaValue) || 5;
+      calculatedQuotaBytes =
+        approvalQuotaUnit === 'GO' ? Math.round(val * 1024 * 1024 * 1024) : Math.round(val * 1024 * 1024);
+    }
+
+    let finalExpiresAt: string | null = null;
+    if (approvalExpiryDays > 0) {
+      const d = new Date();
+      d.setDate(d.getDate() + approvalExpiryDays);
+      finalExpiresAt = d.toISOString();
+    }
+
+    try {
+      const res = await fetch(`/api/admin/requests/${approvingRequest.id}/approve`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          name: approvalName.trim(),
+          uuid: approvalUuid.trim(),
+          token: approvalToken.trim(),
+          quotaBytes: calculatedQuotaBytes,
+          expiresAt: finalExpiresAt,
+          maxIps: Number(approvalMaxIps) || 0,
+        }),
+      });
+
+      if (res.ok) {
+        setApprovingRequest(null);
+        await fetchRequests();
+        await fetchUsers();
+        await fetchStatus();
+      }
+    } catch (e) {
+      console.error(e);
+    } finally {
+      setApprovalSubmitting(false);
+    }
+  };
+
+  // Reject Request
+  const handleRejectRequest = async (id: string) => {
+    if (!confirm('Refuser cette demande d’adhésion ?')) return;
+    try {
+      await fetch(`/api/admin/requests/${id}/reject`, { method: 'POST' });
+      await fetchRequests();
+      await fetchStatus();
+    } catch (e) {
+      console.error(e);
+    }
+  };
+
+  // Delete Request
+  const handleDeleteRequest = async (id: string) => {
+    if (!confirm('Supprimer cette demande ?')) return;
+    try {
+      await fetch(`/api/admin/requests/${id}`, { method: 'DELETE' });
+      await fetchRequests();
+      await fetchStatus();
+    } catch (e) {
+      console.error(e);
+    }
   };
 
   // Delete User
@@ -465,11 +614,21 @@ export default function App() {
     }
   };
 
-  // Filtered Users
+  // Filtered requests
+  const pendingRequestsCount = requests.filter((r) => r.status === 'PENDING').length;
+  const filteredRequests = requests.filter((r) => {
+    if (requestFilter === 'pending') return r.status === 'PENDING';
+    if (requestFilter === 'approved') return r.status === 'APPROVED';
+    if (requestFilter === 'rejected') return r.status === 'REJECTED';
+    return true;
+  });
+
+  // Filtered users
   const filteredUsers = users.filter((u) => {
     const matchesSearch =
       u.name.toLowerCase().includes(searchQuery.toLowerCase()) ||
-      u.uuid.toLowerCase().includes(searchQuery.toLowerCase());
+      u.uuid.toLowerCase().includes(searchQuery.toLowerCase()) ||
+      (u.token || '').toLowerCase().includes(searchQuery.toLowerCase());
     if (!matchesSearch) return false;
 
     if (statusFilter === 'online') return u.isOnline;
@@ -478,6 +637,8 @@ export default function App() {
     if (statusFilter === 'quota') return u.isQuotaExceeded;
     return true;
   });
+
+  const appBaseUrl = status?.host ? `https://${status.host}` : window.location.origin;
 
   return (
     <div className="min-h-screen bg-slate-950 text-slate-100 font-sans selection:bg-cyan-500 selection:text-slate-950 pb-20">
@@ -498,15 +659,15 @@ export default function App() {
                 <h1 className="text-xl font-bold tracking-tight text-white flex items-center gap-2">
                   Nexus Tunnel
                   <span className="text-[11px] font-mono px-2.5 py-0.5 rounded-full bg-cyan-500/15 text-cyan-300 border border-cyan-500/30">
-                    Gestionnaire Multi-Comptes VLESS
+                    Web Panel & Passerelle APK
                   </span>
                 </h1>
               </div>
               <p className="text-xs text-slate-400 mt-0.5 flex items-center gap-2 font-mono">
                 <Layers className="h-3 w-3 text-cyan-400" />
-                Image Docker : <span className="text-cyan-300">docker.io/nextl/nexus-tunnel</span>
+                Image : <span className="text-cyan-300">docker.io/nextl/nexus-tunnel</span>
                 <span className="text-slate-600">•</span>
-                <span>Xray v26.9.9</span>
+                <span>Port 443 / WS</span>
               </p>
             </div>
           </div>
@@ -525,14 +686,14 @@ export default function App() {
                 )}
               </span>
               <span className="text-xs font-semibold text-slate-200 uppercase tracking-wide">
-                {status?.status === 'running' ? 'Tunnel Actif' : status?.status || 'Arrêté'}
+                {status?.status === 'running' ? 'Serveur Actif' : status?.status || 'Arrêté'}
               </span>
             </div>
 
             <button
               onClick={() => handleControl('restart')}
               className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-xl bg-slate-900 hover:bg-slate-800 text-slate-200 border border-slate-800 transition active:scale-95"
-              title="Redémarrer le moteur Xray"
+              title="Redémarrer le serveur Xray"
             >
               <RefreshCw className="h-3.5 w-3.5" />
               Recharger
@@ -559,53 +720,69 @@ export default function App() {
 
         {/* Global Statistics Cards */}
         <div className="grid grid-cols-2 lg:grid-cols-4 gap-3.5 mt-6">
-          <div className="bg-slate-900/70 border border-slate-800/80 rounded-2xl p-4 backdrop-blur">
+          <div
+            onClick={() => setActiveTab('requests')}
+            className={`border rounded-2xl p-4 backdrop-blur cursor-pointer transition ${
+              pendingRequestsCount > 0
+                ? 'bg-amber-950/20 border-amber-500/50 hover:border-amber-400'
+                : 'bg-slate-900/70 border-slate-800/80 hover:border-slate-700'
+            }`}
+          >
             <div className="flex items-center justify-between text-slate-400 text-xs font-medium">
-              <span>Comptes Créés</span>
-              <Users className="h-4 w-4 text-cyan-400" />
+              <span>Demandes d'Adhésion</span>
+              <Inbox className={`h-4 w-4 ${pendingRequestsCount > 0 ? 'text-amber-400 animate-bounce' : 'text-slate-400'}`} />
             </div>
-            <div className="mt-2 text-2xl font-bold text-white tracking-tight">
-              {status?.stats?.totalAccounts ?? users.length}
-            </div>
-            <div className="text-[11px] text-slate-500 mt-0.5">Comptes VLESS configurés</div>
-          </div>
-
-          <div className="bg-slate-900/70 border border-slate-800/80 rounded-2xl p-4 backdrop-blur">
-            <div className="flex items-center justify-between text-slate-400 text-xs font-medium">
-              <span>Utilisateurs Connectés</span>
-              <Activity className="h-4 w-4 text-emerald-400" />
-            </div>
-            <div className="mt-2 text-2xl font-bold text-emerald-400 tracking-tight flex items-baseline gap-2">
-              <span>{status?.stats?.onlineAccounts ?? 0}</span>
+            <div className="mt-2 text-2xl font-bold tracking-tight flex items-baseline gap-2">
+              <span className={pendingRequestsCount > 0 ? 'text-amber-300' : 'text-white'}>
+                {pendingRequestsCount}
+              </span>
               <span className="text-xs text-slate-500 font-normal">
-                / {users.length} compte(s)
+                en attente ({requests.length} au total)
               </span>
             </div>
-            <div className="text-[11px] text-slate-500 mt-0.5">En ligne en ce moment</div>
+            <div className="text-[11px] text-slate-500 mt-0.5">Demandes reçues depuis l'application APK</div>
           </div>
 
-          <div className="bg-slate-900/70 border border-slate-800/80 rounded-2xl p-4 backdrop-blur">
+          <div
+            onClick={() => setActiveTab('users')}
+            className="bg-slate-900/70 border border-slate-800/80 rounded-2xl p-4 backdrop-blur cursor-pointer hover:border-slate-700 transition"
+          >
             <div className="flex items-center justify-between text-slate-400 text-xs font-medium">
-              <span>Sessions WS Actives</span>
+              <span>Comptes Utilisateurs</span>
+              <Users className="h-4 w-4 text-cyan-400" />
+            </div>
+            <div className="mt-2 text-2xl font-bold text-white tracking-tight flex items-baseline gap-2">
+              <span>{users.length}</span>
+              <span className="text-xs text-emerald-400 font-normal">
+                ({status?.stats?.onlineAccounts ?? 0} en ligne)
+              </span>
+            </div>
+            <div className="text-[11px] text-slate-500 mt-0.5">Actifs avec Tokens et Quotas</div>
+          </div>
+
+          <div
+            onClick={() => setActiveTab('sessions')}
+            className="bg-slate-900/70 border border-slate-800/80 rounded-2xl p-4 backdrop-blur cursor-pointer hover:border-slate-700 transition"
+          >
+            <div className="flex items-center justify-between text-slate-400 text-xs font-medium">
+              <span>Sessions Actives</span>
               <Wifi className="h-4 w-4 text-purple-400" />
             </div>
             <div className="mt-2 text-2xl font-bold text-white tracking-tight">
               {status?.stats?.activeSessions ?? sessions.length}
             </div>
-            <div className="text-[11px] text-slate-500 mt-0.5">
-              Appareils connectés simultanés
-            </div>
+            <div className="text-[11px] text-slate-500 mt-0.5">Appareils connectés en direct</div>
           </div>
 
           <div className="bg-slate-900/70 border border-slate-800/80 rounded-2xl p-4 backdrop-blur">
             <div className="flex items-center justify-between text-slate-400 text-xs font-medium">
-              <span>Volume Total Échangé</span>
+              <span>Volume Total Consommé</span>
               <HardDrive className="h-4 w-4 text-blue-400" />
             </div>
             <div className="mt-2 text-2xl font-bold text-cyan-300 tracking-tight">
               {status?.stats?.totalBandwidthUsed || '0 Mo'}
             </div>
-            <div className="text-[11px] text-slate-500 mt-0.5">Données cumulées sur le tunnel</div>
+            <div className="text-[11px] text-slate-500 mt-0.5">Données synchronisées persistantes</div>
           </div>
         </div>
 
@@ -635,9 +812,28 @@ export default function App() {
           </div>
         )}
 
-        {/* Main Tab Navigation */}
+        {/* Main Tabs Navigation */}
         <div className="flex items-center justify-between border-b border-slate-800 mt-8 pb-3 gap-4 flex-wrap">
-          <div className="flex items-center space-x-2">
+          <div className="flex items-center space-x-2 overflow-x-auto">
+            {/* Tab: Requests */}
+            <button
+              onClick={() => setActiveTab('requests')}
+              className={`flex items-center gap-2 px-3.5 py-2 rounded-xl text-xs font-semibold transition ${
+                activeTab === 'requests'
+                  ? 'bg-amber-500/20 text-amber-300 border border-amber-500/40 shadow-sm'
+                  : 'text-slate-400 hover:text-slate-200 hover:bg-slate-900'
+              }`}
+            >
+              <Inbox className="h-4 w-4" />
+              Demandes APK ({requests.length})
+              {pendingRequestsCount > 0 && (
+                <span className="px-1.5 py-0.2 rounded-full text-[10px] bg-amber-500 text-slate-950 font-bold">
+                  {pendingRequestsCount}
+                </span>
+              )}
+            </button>
+
+            {/* Tab: Users */}
             <button
               onClick={() => setActiveTab('users')}
               className={`flex items-center gap-2 px-3.5 py-2 rounded-xl text-xs font-semibold transition ${
@@ -647,9 +843,10 @@ export default function App() {
               }`}
             >
               <Users className="h-4 w-4" />
-              Gestion des Comptes ({users.length})
+              Comptes & Tokens ({users.length})
             </button>
 
+            {/* Tab: Sessions */}
             <button
               onClick={() => setActiveTab('sessions')}
               className={`flex items-center gap-2 px-3.5 py-2 rounded-xl text-xs font-semibold transition ${
@@ -659,9 +856,10 @@ export default function App() {
               }`}
             >
               <Wifi className="h-4 w-4" />
-              Sessions en Direct ({sessions.length})
+              Sessions ({sessions.length})
             </button>
 
+            {/* Tab: Settings & APK Liaison */}
             <button
               onClick={() => setActiveTab('settings')}
               className={`flex items-center gap-2 px-3.5 py-2 rounded-xl text-xs font-semibold transition ${
@@ -670,10 +868,11 @@ export default function App() {
                   : 'text-slate-400 hover:text-slate-200 hover:bg-slate-900'
               }`}
             >
-              <Sliders className="h-4 w-4" />
-              Paramètres Tunnel
+              <SmartphoneNfc className="h-4 w-4" />
+              Liaison APK & Docs
             </button>
 
+            {/* Tab: Logs */}
             <button
               onClick={() => setActiveTab('logs')}
               className={`flex items-center gap-2 px-3.5 py-2 rounded-xl text-xs font-semibold transition ${
@@ -683,18 +882,18 @@ export default function App() {
               }`}
             >
               <Terminal className="h-4 w-4" />
-              Journal d'Activité
+              Logs d'Activité
             </button>
           </div>
 
-          {/* Search & Filter Bar (shown on users tab) */}
+          {/* Search bar when on users tab */}
           {activeTab === 'users' && (
-            <div className="flex items-center gap-2.5 w-full md:w-auto">
-              <div className="relative flex-1 md:w-64">
+            <div className="flex items-center gap-2 w-full md:w-auto">
+              <div className="relative flex-1 md:w-60">
                 <Search className="h-3.5 w-3.5 text-slate-500 absolute left-3 top-1/2 -translate-y-1/2" />
                 <input
                   type="text"
-                  placeholder="Rechercher nom ou UUID..."
+                  placeholder="Nom, UUID ou Token..."
                   value={searchQuery}
                   onChange={(e) => setSearchQuery(e.target.value)}
                   className="w-full bg-slate-900 border border-slate-800 rounded-xl pl-9 pr-3 py-1.5 text-xs text-slate-200 focus:outline-none focus:border-cyan-500"
@@ -707,16 +906,230 @@ export default function App() {
                 className="bg-slate-900 border border-slate-800 rounded-xl px-2.5 py-1.5 text-xs text-slate-300 focus:outline-none focus:border-cyan-500"
               >
                 <option value="all">Tous les états</option>
-                <option value="online">En ligne seulement</option>
+                <option value="online">En ligne</option>
                 <option value="offline">Hors ligne</option>
                 <option value="expired">Expirés</option>
                 <option value="quota">Quota Dépassé</option>
               </select>
             </div>
           )}
+
+          {/* Filter when on requests tab */}
+          {activeTab === 'requests' && (
+            <div className="flex items-center gap-1.5">
+              <button
+                onClick={() => setRequestFilter('all')}
+                className={`px-2.5 py-1 rounded-lg text-xs font-medium transition ${
+                  requestFilter === 'all'
+                    ? 'bg-slate-800 text-white'
+                    : 'text-slate-400 hover:text-slate-200'
+                }`}
+              >
+                Toutes ({requests.length})
+              </button>
+              <button
+                onClick={() => setRequestFilter('pending')}
+                className={`px-2.5 py-1 rounded-lg text-xs font-medium transition ${
+                  requestFilter === 'pending'
+                    ? 'bg-amber-500/20 text-amber-300 border border-amber-500/40'
+                    : 'text-slate-400 hover:text-slate-200'
+                }`}
+              >
+                En Attente ({pendingRequestsCount})
+              </button>
+              <button
+                onClick={() => setRequestFilter('approved')}
+                className={`px-2.5 py-1 rounded-lg text-xs font-medium transition ${
+                  requestFilter === 'approved'
+                    ? 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/40'
+                    : 'text-slate-400 hover:text-slate-200'
+                }`}
+              >
+                Approuvées
+              </button>
+            </div>
+          )}
         </div>
 
-        {/* TAB 1: USERS LIST */}
+        {/* ======================================================== */}
+        {/* TAB 1: MEMBERSHIP REQUESTS (DEMANDES D'ADHÉSION APK) */}
+        {/* ======================================================== */}
+        {activeTab === 'requests' && (
+          <div className="mt-6 space-y-4">
+            <div className="bg-slate-900/60 border border-slate-800 rounded-2xl p-4 flex flex-col sm:flex-row sm:items-center justify-between gap-3 text-xs">
+              <div className="flex items-center gap-2.5">
+                <div className="h-8 w-8 rounded-xl bg-amber-500/10 border border-amber-500/30 flex items-center justify-center text-amber-400 flex-shrink-0">
+                  <Smartphone className="h-4 w-4" />
+                </div>
+                <div>
+                  <h3 className="font-semibold text-white">
+                    Flux d'adhésion en direct de l'application VPN Android
+                  </h3>
+                  <p className="text-slate-400 text-[11px]">
+                    Les utilisateurs remplissent le formulaire dans l'application avec leur pays, moyen de contact (WhatsApp/Telegram) et appareil.
+                  </p>
+                </div>
+              </div>
+              <button
+                onClick={fetchRequests}
+                className="self-start sm:self-auto flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs border border-slate-700 transition"
+              >
+                <RefreshCw className="h-3 w-3" />
+                Actualiser les demandes
+              </button>
+            </div>
+
+            {filteredRequests.length === 0 ? (
+              <div className="bg-slate-900/40 border border-slate-800/80 rounded-2xl p-12 text-center">
+                <Inbox className="h-10 w-10 text-slate-600 mx-auto mb-3" />
+                <h3 className="text-base font-semibold text-slate-300">Aucune demande d'adhésion</h3>
+                <p className="text-xs text-slate-500 mt-1 max-w-md mx-auto">
+                  Dès qu'un utilisateur soumet son inscription depuis l'application APK, sa demande s'affichera ici instantanément pour validation.
+                </p>
+              </div>
+            ) : (
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                {filteredRequests.map((req) => (
+                  <div
+                    key={req.id}
+                    className={`bg-slate-900/80 border rounded-2xl p-5 backdrop-blur transition shadow-lg relative ${
+                      req.status === 'PENDING'
+                        ? 'border-amber-600/60 bg-amber-950/10'
+                        : req.status === 'APPROVED'
+                        ? 'border-emerald-800/50 bg-slate-900/80'
+                        : 'border-slate-800/60 opacity-60'
+                    }`}
+                  >
+                    {/* Header: Name & Status */}
+                    <div className="flex items-start justify-between gap-3 pb-3 border-b border-slate-800">
+                      <div>
+                        <div className="flex items-center gap-2">
+                          <h3 className="font-bold text-white text-base">{req.fullName}</h3>
+                          <span
+                            className={`px-2 py-0.5 rounded-full text-[10px] font-bold uppercase tracking-wider ${
+                              req.status === 'PENDING'
+                                ? 'bg-amber-500/20 text-amber-300 border border-amber-500/40 animate-pulse'
+                                : req.status === 'APPROVED'
+                                ? 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/40'
+                                : 'bg-rose-500/20 text-rose-300 border border-rose-500/40'
+                            }`}
+                          >
+                            {req.status === 'PENDING' ? 'En Attente' : req.status === 'APPROVED' ? 'Approuvé' : 'Refusé'}
+                          </span>
+                        </div>
+                        <div className="text-xs text-slate-400 mt-0.5 flex items-center gap-1.5 font-medium">
+                          <span>{req.country} ({req.countryCode})</span>
+                          <span className="text-slate-600">•</span>
+                          <span>Reçu le {new Date(req.createdAt).toLocaleDateString()} à {new Date(req.createdAt).toLocaleTimeString()}</span>
+                        </div>
+                      </div>
+
+                      <button
+                        onClick={() => handleDeleteRequest(req.id)}
+                        className="p-1.5 rounded-lg text-slate-500 hover:text-rose-400 hover:bg-slate-800 transition"
+                        title="Supprimer la demande"
+                      >
+                        <Trash2 className="h-3.5 w-3.5" />
+                      </button>
+                    </div>
+
+                    {/* Middle details: Communication Channel & Device */}
+                    <div className="grid grid-cols-2 gap-2 mt-3.5 text-xs">
+                      {/* Communication Channel */}
+                      <div className="p-2.5 rounded-xl bg-slate-950/70 border border-slate-800">
+                        <span className="text-[10px] text-slate-500 uppercase tracking-wider block font-semibold">
+                          Contact ({req.channel})
+                        </span>
+                        <div className="mt-1 flex items-center justify-between gap-1">
+                          <span className="font-mono text-cyan-300 truncate max-w-[140px]">
+                            {req.contactDetail}
+                          </span>
+                          {req.channel.toUpperCase().includes('WHATSAPP') ? (
+                            <a
+                              href={`https://wa.me/${req.contactDetail.replace(/[^0-9]/g, '')}`}
+                              target="_blank"
+                              rel="noreferrer"
+                              className="text-[10px] px-2 py-0.5 rounded bg-emerald-950 text-emerald-400 border border-emerald-800 hover:bg-emerald-900 transition flex items-center gap-1"
+                            >
+                              <MessageSquare className="h-3 w-3" />
+                              WhatsApp
+                            </a>
+                          ) : (
+                            <a
+                              href={`https://t.me/${req.contactDetail.replace('@', '')}`}
+                              target="_blank"
+                              rel="noreferrer"
+                              className="text-[10px] px-2 py-0.5 rounded bg-blue-950 text-blue-400 border border-blue-800 hover:bg-blue-900 transition flex items-center gap-1"
+                            >
+                              <Send className="h-3 w-3" />
+                              Telegram
+                            </a>
+                          )}
+                        </div>
+                      </div>
+
+                      {/* Device Info */}
+                      <div className="p-2.5 rounded-xl bg-slate-950/70 border border-slate-800">
+                        <span className="text-[10px] text-slate-500 uppercase tracking-wider block font-semibold">
+                          Appareil
+                        </span>
+                        <div className="mt-1 text-slate-200 truncate font-medium">
+                          {req.deviceModel}
+                        </div>
+                        <span className="text-[10px] text-slate-500 font-mono block truncate">
+                          ID: {req.deviceId}
+                        </span>
+                      </div>
+                    </div>
+
+                    {/* If Approved, show assigned token */}
+                    {req.status === 'APPROVED' && req.assignedToken && (
+                      <div className="mt-3 p-2.5 bg-emerald-950/30 border border-emerald-800/60 rounded-xl flex items-center justify-between text-xs">
+                        <div className="flex items-center gap-2">
+                          <Key className="h-4 w-4 text-emerald-400" />
+                          <span className="text-slate-300">Token Assigné :</span>
+                          <span className="font-mono text-emerald-300 font-bold">{req.assignedToken}</span>
+                        </div>
+                        <button
+                          onClick={() => handleCopy(req.assignedToken!, `req-tk-${req.id}`)}
+                          className="text-cyan-400 hover:text-cyan-300 text-[11px] flex items-center gap-1"
+                        >
+                          {copiedKey === `req-tk-${req.id}` ? <Check className="h-3 w-3 text-emerald-400" /> : <Copy className="h-3 w-3" />}
+                          Copier
+                        </button>
+                      </div>
+                    )}
+
+                    {/* Action buttons */}
+                    {req.status === 'PENDING' && (
+                      <div className="flex items-center gap-2 mt-4 pt-3 border-t border-slate-800">
+                        <button
+                          onClick={() => openApprovalModal(req)}
+                          className="flex-1 py-2 px-3 rounded-xl bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-500 hover:to-teal-500 text-slate-950 text-xs font-bold flex items-center justify-center gap-1.5 shadow-md shadow-emerald-900/30 transition active:scale-95"
+                        >
+                          <UserCheck className="h-4 w-4" />
+                          Approuver & Créer Compte
+                        </button>
+
+                        <button
+                          onClick={() => handleRejectRequest(req.id)}
+                          className="py-2 px-3 rounded-xl bg-rose-950/60 hover:bg-rose-900 text-rose-300 border border-rose-800 text-xs font-semibold flex items-center justify-center gap-1 transition active:scale-95"
+                        >
+                          <UserX className="h-4 w-4" />
+                          Refuser
+                        </button>
+                      </div>
+                    )}
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* ======================================================== */}
+        {/* TAB 2: USER ACCOUNTS & TOKENS */}
+        {/* ======================================================== */}
         {activeTab === 'users' && (
           <div className="mt-6 space-y-4">
             {filteredUsers.length === 0 ? (
@@ -724,9 +1137,7 @@ export default function App() {
                 <Users className="h-10 w-10 text-slate-600 mx-auto mb-3" />
                 <h3 className="text-base font-semibold text-slate-300">Aucun compte trouvé</h3>
                 <p className="text-xs text-slate-500 mt-1 max-w-sm mx-auto">
-                  {searchQuery || statusFilter !== 'all'
-                    ? 'Aucun compte ne correspond à vos critères de recherche.'
-                    : 'Commencez par créer votre premier compte VLESS personnalisé.'}
+                  Créez manuellement un compte ou approuvez une demande d'adhésion reçue depuis l'APK.
                 </p>
                 <button
                   onClick={openCreateModal}
@@ -753,13 +1164,12 @@ export default function App() {
                         : 'border-slate-800/80'
                     }`}
                   >
-                    {/* Header of Card */}
+                    {/* Header */}
                     <div className="flex items-start justify-between gap-3 pb-3 border-b border-slate-800/80">
                       <div>
                         <div className="flex items-center gap-2">
                           <h3 className="font-bold text-white text-base">{user.name}</h3>
 
-                          {/* Online / Offline status badge */}
                           {user.isOnline ? (
                             <span className="flex items-center gap-1.5 px-2 py-0.5 rounded-full text-[10px] font-semibold bg-emerald-500/20 text-emerald-300 border border-emerald-500/40">
                               <span className="h-1.5 w-1.5 rounded-full bg-emerald-400 animate-ping"></span>
@@ -778,24 +1188,24 @@ export default function App() {
                           )}
                         </div>
 
-                        {/* UUID with copy */}
+                        {/* UUID */}
                         <div className="flex items-center gap-1.5 mt-1 text-slate-400 text-xs font-mono">
-                          <span className="truncate max-w-[220px]">{user.uuid}</span>
+                          <span className="truncate max-w-[200px]">UUID: {user.uuid}</span>
                           <button
                             onClick={() => handleCopy(user.uuid, `uuid-${user.id}`)}
                             className="text-slate-400 hover:text-cyan-300 p-0.5 transition"
                             title="Copier l'UUID"
                           >
                             {copiedKey === `uuid-${user.id}` ? (
-                              <Check className="h-3.5 w-3.5 text-emerald-400" />
+                              <Check className="h-3 w-3 text-emerald-400" />
                             ) : (
-                              <Copy className="h-3.5 w-3.5" />
+                              <Copy className="h-3 w-3" />
                             )}
                           </button>
                         </div>
                       </div>
 
-                      {/* Quick Switch Button (Active/Inactive) */}
+                      {/* Switch Button */}
                       <button
                         onClick={() => handleToggleUser(user)}
                         className={`p-2 rounded-xl transition border ${
@@ -809,12 +1219,37 @@ export default function App() {
                       </button>
                     </div>
 
-                    {/* Quota Progress Bar */}
-                    <div className="mt-4">
+                    {/* Activation Token Highlight Bar */}
+                    <div className="mt-3 p-2.5 rounded-xl bg-cyan-950/20 border border-cyan-800/40 flex items-center justify-between text-xs">
+                      <div className="flex items-center gap-2">
+                        <Key className="h-3.5 w-3.5 text-cyan-400 flex-shrink-0" />
+                        <span className="text-slate-400">Token APK :</span>
+                        <span className="font-mono text-cyan-300 font-bold tracking-wide">
+                          {user.token}
+                        </span>
+                      </div>
+                      <button
+                        onClick={() => handleCopy(user.token, `tk-${user.id}`)}
+                        className="text-cyan-400 hover:text-cyan-200 text-[11px] font-medium flex items-center gap-1"
+                      >
+                        {copiedKey === `tk-${user.id}` ? (
+                          <>
+                            <Check className="h-3 w-3 text-emerald-400" /> Copié !
+                          </>
+                        ) : (
+                          <>
+                            <Copy className="h-3 w-3" /> Copier Token
+                          </>
+                        )}
+                      </button>
+                    </div>
+
+                    {/* Quota Progress */}
+                    <div className="mt-3.5">
                       <div className="flex items-center justify-between text-xs mb-1.5">
                         <span className="text-slate-400 flex items-center gap-1 font-medium">
                           <HardDrive className="h-3.5 w-3.5 text-cyan-400" />
-                          Quota de connexion :
+                          Consommation Données :
                         </span>
                         <div className="font-mono text-xs">
                           <span className="font-semibold text-white">{user.readableUsed}</span>
@@ -855,55 +1290,38 @@ export default function App() {
                       )}
                     </div>
 
-                    {/* Expiration & IP Limits Badges */}
-                    <div className="grid grid-cols-2 gap-2 mt-4 text-xs">
-                      {/* Expiration Badge */}
-                      <div className="p-2.5 rounded-xl bg-slate-950/60 border border-slate-800/80">
+                    {/* Expiry & Max IPs */}
+                    <div className="grid grid-cols-2 gap-2 mt-3.5 text-xs">
+                      <div className="p-2 rounded-xl bg-slate-950/60 border border-slate-800/80">
                         <span className="text-[10px] text-slate-500 uppercase tracking-wider block font-semibold">
                           Expiration
                         </span>
                         <div className="mt-0.5 flex items-center gap-1">
                           <Clock className="h-3.5 w-3.5 text-slate-400" />
                           {user.expiresAt ? (
-                            <span
-                              className={`font-semibold ${
-                                user.isExpired ? 'text-rose-400 font-bold' : 'text-slate-200'
-                              }`}
-                            >
-                              {user.isExpired
-                                ? 'Expiré'
-                                : new Date(user.expiresAt).toLocaleDateString()}
+                            <span className={user.isExpired ? 'text-rose-400 font-bold' : 'text-slate-200'}>
+                              {user.isExpired ? 'Expiré' : new Date(user.expiresAt).toLocaleDateString()}
                             </span>
                           ) : (
-                            <span className="text-cyan-400 font-medium">Illimité (Jamais)</span>
+                            <span className="text-cyan-400 font-medium">Illimité</span>
                           )}
                         </div>
                       </div>
 
-                      {/* Simultaneous IP Limit Badge */}
-                      <div className="p-2.5 rounded-xl bg-slate-950/60 border border-slate-800/80">
+                      <div className="p-2 rounded-xl bg-slate-950/60 border border-slate-800/80">
                         <span className="text-[10px] text-slate-500 uppercase tracking-wider block font-semibold">
-                          Limite d'Appareils / IP
+                          Limite d'Appareils
                         </span>
                         <div className="mt-0.5 flex items-center gap-1">
                           <Smartphone className="h-3.5 w-3.5 text-slate-400" />
                           <span className="font-semibold text-slate-200">
-                            {user.maxIps > 0 ? (
-                              <>
-                                <span className={user.activeIpsCount >= user.maxIps ? 'text-amber-400' : ''}>
-                                  {user.activeIpsCount}
-                                </span>
-                                /{user.maxIps} IP max
-                              </>
-                            ) : (
-                              <span className="text-cyan-400 font-medium">Illimité</span>
-                            )}
+                            {user.maxIps > 0 ? `${user.activeIpsCount}/${user.maxIps} IP max` : 'Illimité'}
                           </span>
                         </div>
                       </div>
                     </div>
 
-                    {/* Active IPs list if online */}
+                    {/* Active IPs */}
                     {user.isOnline && user.activeIps.length > 0 && (
                       <div className="mt-3 p-2 bg-slate-950/80 border border-slate-800 rounded-lg text-[11px] font-mono text-slate-300 flex items-center gap-2">
                         <Wifi className="h-3.5 w-3.5 text-emerald-400 flex-shrink-0" />
@@ -914,14 +1332,14 @@ export default function App() {
                       </div>
                     )}
 
-                    {/* Card Actions Footer */}
+                    {/* Card Actions */}
                     <div className="flex items-center justify-between gap-2 mt-4 pt-3 border-t border-slate-800/80">
                       <button
                         onClick={() => handleViewConfigs(user)}
                         className="flex-1 py-1.5 px-3 rounded-xl bg-cyan-500/10 hover:bg-cyan-500/20 text-cyan-300 border border-cyan-500/30 text-xs font-semibold flex items-center justify-center gap-1.5 transition active:scale-95"
                       >
                         <QrCode className="h-3.5 w-3.5" />
-                        Connexion & QR Code
+                        Lien & QR Code
                       </button>
 
                       <button
@@ -955,7 +1373,9 @@ export default function App() {
           </div>
         )}
 
-        {/* TAB 2: ACTIVE SESSIONS */}
+        {/* ======================================================== */}
+        {/* TAB 3: LIVE SESSIONS */}
+        {/* ======================================================== */}
         {activeTab === 'sessions' && (
           <div className="mt-6 space-y-4">
             <div className="bg-slate-900/80 border border-slate-800 rounded-2xl p-6 backdrop-blur shadow-xl">
@@ -1026,70 +1446,113 @@ export default function App() {
           </div>
         )}
 
-        {/* TAB 3: SETTINGS & DOCKER DEPLOYMENTS */}
+        {/* ======================================================== */}
+        {/* TAB 4: SETTINGS & APK LIAISON GUIDE */}
+        {/* ======================================================== */}
         {activeTab === 'settings' && (
           <div className="mt-6 space-y-6">
+            {/* Box: Connection parameters to put in Android App */}
             <div className="bg-slate-900/80 border border-slate-800 rounded-2xl p-6 backdrop-blur shadow-xl">
-              <h2 className="text-base font-semibold text-white flex items-center gap-2 pb-3 border-b border-slate-800">
-                <Sliders className="h-4 w-4 text-cyan-400" />
-                Configuration Globale du Tunnel
-              </h2>
-
-              <div className="mt-4 grid grid-cols-1 md:grid-cols-2 gap-4">
-                <div className="p-4 rounded-xl bg-slate-950/60 border border-slate-800">
-                  <span className="text-slate-400 text-xs block mb-1">Image Docker Source</span>
-                  <span className="text-cyan-300 font-mono text-sm font-semibold">
-                    docker.io/nextl/nexus-tunnel:latest
-                  </span>
-                  <p className="text-[11px] text-slate-500 mt-1">
-                    Image conteneur Alpine avec noyau Xray v26.9.9 et listes GeoIP / GeoSite.
-                  </p>
+              <div className="flex items-center gap-3 pb-4 border-b border-slate-800">
+                <div className="h-10 w-10 rounded-xl bg-cyan-500/20 border border-cyan-500/30 flex items-center justify-center text-cyan-400">
+                  <SmartphoneNfc className="h-5 w-5" />
                 </div>
-
-                <div className="p-4 rounded-xl bg-slate-950/60 border border-slate-800">
-                  <span className="text-slate-400 text-xs block mb-1">Chemin d'écoute WebSocket</span>
-                  <span className="text-white font-mono text-sm font-semibold">
-                    {status?.tunnelPath || '/nexustunnel'}
-                  </span>
-                  <p className="text-[11px] text-slate-500 mt-1">
-                    Acheminé via proxy TLS HTTPS 443 vers le serveur Xray interne.
+                <div>
+                  <h2 className="text-base font-bold text-white">
+                    Liaison avec l'Application Android (tchindaazice/App)
+                  </h2>
+                  <p className="text-xs text-slate-400 mt-0.5">
+                    Coordonnées de l'API et URL à renseigner dans les paramètres de votre application APK.
                   </p>
                 </div>
               </div>
 
-              {/* Docker Deploy commands for external servers */}
-              <div className="mt-6">
-                <h3 className="text-xs font-semibold text-slate-300 uppercase tracking-wider mb-2">
-                  Commande Docker Run pour déployer sur un VPS externe :
-                </h3>
-                <div className="relative">
-                  <pre className="p-3 bg-slate-950 border border-slate-800 rounded-xl text-xs font-mono text-cyan-300 overflow-x-auto whitespace-pre-wrap">
-                    {`docker run -d \\
-  --name nexus-tunnel \\
-  --restart always \\
-  -p 8080:8080 \\
-  -e PORT=8080 \\
-  docker.io/nextl/nexus-tunnel:latest`}
-                  </pre>
+              <div className="mt-4 grid grid-cols-1 md:grid-cols-2 gap-4">
+                <div className="p-4 rounded-xl bg-slate-950/80 border border-slate-800">
+                  <div className="flex items-center justify-between mb-1">
+                    <span className="text-slate-400 text-xs font-semibold">URL de Base du Web Panel (Base URL)</span>
+                    <button
+                      onClick={() => handleCopy(appBaseUrl, 'copy-base-url')}
+                      className="text-cyan-400 hover:text-cyan-300 text-[11px] flex items-center gap-1"
+                    >
+                      {copiedKey === 'copy-base-url' ? <Check className="h-3 w-3 text-emerald-400" /> : <Copy className="h-3 w-3" />}
+                      Copier
+                    </button>
+                  </div>
+                  <div className="p-2.5 rounded-lg bg-slate-900 border border-slate-800 text-cyan-300 font-mono text-xs break-all">
+                    {appBaseUrl}
+                  </div>
+                  <p className="text-[11px] text-slate-500 mt-1.5">
+                    Dans l'écran « Paramètres » de l'APK, renseignez cette URL comme adresse de serveur.
+                  </p>
+                </div>
+
+                <div className="p-4 rounded-xl bg-slate-950/80 border border-slate-800">
+                  <span className="text-slate-400 text-xs font-semibold block mb-1">
+                    Endpoints API actifs sur ce serveur
+                  </span>
+                  <div className="space-y-1 text-[11px] font-mono text-slate-300">
+                    <div>• <span className="text-amber-400 font-bold">POST</span> <span className="text-slate-200">/api/membership/request</span> (Demande d'adhésion)</div>
+                    <div>• <span className="text-emerald-400 font-bold">GET</span> <span className="text-slate-200">/api/membership/status</span> (Vérification statut)</div>
+                    <div>• <span className="text-amber-400 font-bold">POST</span> <span className="text-slate-200">/api/token/verify</span> (Activation de Token)</div>
+                    <div>• <span className="text-emerald-400 font-bold">GET</span> <span className="text-slate-200">/api/user/quota</span> (Synchronisation quota)</div>
+                    <div>• <span className="text-emerald-400 font-bold">GET</span> <span className="text-slate-200">/api/app/config</span> (Auto-découverte VLESS)</div>
+                  </div>
+                </div>
+              </div>
+
+              {/* Ready prompt to copy for AI Studio mobile app */}
+              <div className="mt-6 border-t border-slate-800 pt-5">
+                <div className="flex items-center justify-between mb-2">
+                  <h3 className="text-xs font-bold text-white uppercase tracking-wider flex items-center gap-2">
+                    <MessageSquare className="h-4 w-4 text-cyan-400" />
+                    Prompt prêt à l'emploi pour votre projet Android APK dans Google AI Studio :
+                  </h3>
                   <button
-                    onClick={() =>
-                      handleCopy(
-                        `docker run -d --name nexus-tunnel --restart always -p 8080:8080 -e PORT=8080 docker.io/nextl/nexus-tunnel:latest`,
-                        'copy-docker-run'
-                      )
-                    }
-                    className="absolute top-2.5 right-2.5 text-xs text-cyan-400 hover:text-cyan-300 flex items-center gap-1 bg-slate-900/90 px-2 py-1 rounded border border-slate-800"
+                    onClick={() => {
+                      const promptText = `Met à jour l'application Android pour qu'elle se connecte automatiquement au Web Panel Nexus Tunnel déployé à l'adresse suivante :
+Base URL : ${appBaseUrl}/
+1. Dans VpnConfig et NexusRepository, utilise par défaut l'URL : ${appBaseUrl}/
+2. Lors de l'envoi du formulaire d'inscription (RegistrationScreen), envoie la requête POST à /api/membership/request avec fullName, country, countryCode, channel, contactDetail, deviceId, deviceModel, androidVersion, timestamp.
+3. Pendant l'écran d'attente (PendingApprovalScreen), interroge GET /api/membership/status?deviceId={deviceId}&contact={contact}. Dès que la réponse renvoie status="APPROVED", enregistre la session avec uid, token, quotaBytes et expirationTimestamp et bascule vers le Dashboard!
+4. Si l'utilisateur entre un Token manuellement, envoie la requête POST à /api/token/verify avec token et deviceId.
+5. Sur le DashboardScreen, interroge en temps réel GET /api/user/quota?uid={uid} pour afficher la consommation restante et la date d'expiration.`;
+                      handleCopy(promptText, 'copy-prompt-android');
+                    }}
+                    className="text-xs px-3 py-1 rounded-lg bg-cyan-600 hover:bg-cyan-500 text-white font-semibold flex items-center gap-1.5 transition"
                   >
-                    {copiedKey === 'copy-docker-run' ? <Check className="h-3 w-3 text-emerald-400" /> : <Copy className="h-3 w-3" />}
-                    Copier
+                    {copiedKey === 'copy-prompt-android' ? (
+                      <>
+                        <Check className="h-3 w-3" /> Prompt Copié !
+                      </>
+                    ) : (
+                      <>
+                        <Copy className="h-3 w-3" /> Copier le Prompt pour l'App Mobile
+                      </>
+                    )}
                   </button>
                 </div>
+
+                <pre className="p-3.5 bg-slate-950 border border-slate-800 rounded-xl text-xs font-mono text-cyan-200 overflow-x-auto whitespace-pre-wrap leading-relaxed">
+{`Met à jour l'application Android pour qu'elle se connecte automatiquement au Web Panel Nexus Tunnel déployé à l'adresse suivante :
+Base URL : ${appBaseUrl}/
+
+1. Dans VpnConfig et NexusRepository, utilise par défaut l'URL : ${appBaseUrl}/
+2. Lors de l'envoi du formulaire d'inscription (RegistrationScreen), envoie la requête POST à /api/membership/request avec :
+   - fullName, country, countryCode, channel, contactDetail, deviceId, deviceModel, androidVersion, timestamp.
+3. Pendant l'écran d'attente (PendingApprovalScreen), interroge périodiquement GET /api/membership/status?deviceId={deviceId}&contact={contact}.
+   Dès que le serveur renvoie status="APPROVED", enregistre la session avec l'uid, token, quotaBytes et expirationTimestamp et affiche directement le Dashboard VPN.
+4. Si un utilisateur entre un Token créé par l'admin, valide-le via POST /api/token/verify.
+5. Sur le DashboardScreen, interroge GET /api/user/quota?uid={uid} pour afficher en direct le quota consommé et la date d'expiration.`}
+                </pre>
               </div>
             </div>
           </div>
         )}
 
-        {/* TAB 4: REAL-TIME LOGS */}
+        {/* ======================================================== */}
+        {/* TAB 5: REAL-TIME AUDIT LOGS */}
+        {/* ======================================================== */}
         {activeTab === 'logs' && (
           <div className="mt-6">
             <div className="bg-slate-900/80 border border-slate-800 rounded-2xl p-6 backdrop-blur shadow-xl flex flex-col h-[550px]">
@@ -1150,7 +1613,181 @@ export default function App() {
         )}
       </div>
 
-      {/* MODAL: CREATE / EDIT USER ACCOUNT */}
+      {/* ======================================================== */}
+      {/* MODAL: APPROVE MEMBERSHIP REQUEST */}
+      {/* ======================================================== */}
+      {approvingRequest && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-950/80 backdrop-blur-sm animate-in fade-in duration-200">
+          <div className="bg-slate-900 border border-slate-800 rounded-2xl w-full max-w-lg p-6 shadow-2xl relative max-h-[90vh] overflow-y-auto">
+            <button
+              onClick={() => setApprovingRequest(null)}
+              className="absolute top-5 right-5 text-slate-400 hover:text-white p-1 rounded-lg"
+            >
+              <X className="h-5 w-5" />
+            </button>
+
+            <h2 className="text-lg font-bold text-white flex items-center gap-2">
+              <UserCheck className="h-5 w-5 text-emerald-400" />
+              Approuver la Demande d'Adhésion
+            </h2>
+            <p className="text-xs text-slate-400 mt-1">
+              Cette action crée le compte VLESS, génère le Token d'activation et le transmet instantanément à l'application APK de {approvingRequest.fullName}.
+            </p>
+
+            <form onSubmit={handleApproveRequest} className="mt-5 space-y-4">
+              <div>
+                <label className="text-xs font-semibold text-slate-300 block mb-1">
+                  Nom du Membre
+                </label>
+                <input
+                  type="text"
+                  value={approvalName}
+                  onChange={(e) => setApprovalName(e.target.value)}
+                  required
+                  className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3 py-2 text-xs text-white focus:outline-none focus:border-cyan-500"
+                />
+              </div>
+
+              {/* UUID & Token */}
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                <div>
+                  <label className="text-xs font-semibold text-slate-300 block mb-1">
+                    UUID VLESS Attribué
+                  </label>
+                  <input
+                    type="text"
+                    value={approvalUuid}
+                    onChange={(e) => setApprovalUuid(e.target.value)}
+                    required
+                    className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3 py-2 text-xs font-mono text-cyan-300 focus:outline-none"
+                  />
+                </div>
+                <div>
+                  <label className="text-xs font-semibold text-slate-300 block mb-1">
+                    Token d'Activation (APK)
+                  </label>
+                  <input
+                    type="text"
+                    value={approvalToken}
+                    onChange={(e) => setApprovalToken(e.target.value)}
+                    required
+                    className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3 py-2 text-xs font-mono text-emerald-300 font-bold focus:outline-none"
+                  />
+                </div>
+              </div>
+
+              {/* Quota */}
+              <div className="p-3.5 bg-slate-950/60 border border-slate-800 rounded-xl space-y-2">
+                <div className="flex items-center justify-between">
+                  <label className="text-xs font-semibold text-slate-300 flex items-center gap-1.5">
+                    <HardDrive className="h-3.5 w-3.5 text-cyan-400" />
+                    Quota de Données à Allouer
+                  </label>
+                  <label className="flex items-center gap-1.5 text-xs text-slate-300 cursor-pointer">
+                    <input
+                      type="checkbox"
+                      checked={approvalIsUnlimitedQuota}
+                      onChange={(e) => setApprovalIsUnlimitedQuota(e.target.checked)}
+                      className="rounded bg-slate-900 border-slate-700 text-cyan-500"
+                    />
+                    <span>Illimité</span>
+                  </label>
+                </div>
+
+                {!approvalIsUnlimitedQuota && (
+                  <div className="flex gap-2">
+                    <input
+                      type="number"
+                      min="1"
+                      value={approvalQuotaValue}
+                      onChange={(e) => setApprovalQuotaValue(e.target.value)}
+                      className="flex-1 bg-slate-950 border border-slate-800 rounded-xl px-3 py-1.5 text-xs text-white"
+                    />
+                    <div className="flex rounded-xl bg-slate-900 border border-slate-800 p-0.5">
+                      <button
+                        type="button"
+                        onClick={() => setApprovalQuotaUnit('MO')}
+                        className={`px-3 py-1 text-xs rounded-lg font-medium ${
+                          approvalQuotaUnit === 'MO' ? 'bg-cyan-600 text-white' : 'text-slate-400'
+                        }`}
+                      >
+                        Mo
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setApprovalQuotaUnit('GO')}
+                        className={`px-3 py-1 text-xs rounded-lg font-medium ${
+                          approvalQuotaUnit === 'GO' ? 'bg-cyan-600 text-white' : 'text-slate-400'
+                        }`}
+                      >
+                        Go
+                      </button>
+                    </div>
+                  </div>
+                )}
+              </div>
+
+              {/* Expiration & IP Limit */}
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className="text-xs font-semibold text-slate-300 block mb-1">
+                    Durée de Validité
+                  </label>
+                  <select
+                    value={approvalExpiryDays}
+                    onChange={(e) => setApprovalExpiryDays(Number(e.target.value))}
+                    className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3 py-2 text-xs text-white"
+                  >
+                    <option value={7}>7 Jours (1 semaine)</option>
+                    <option value={30}>30 Jours (1 mois)</option>
+                    <option value={90}>90 Jours (3 mois)</option>
+                    <option value={365}>365 Jours (1 an)</option>
+                    <option value={0}>Illimité (Jamais)</option>
+                  </select>
+                </div>
+
+                <div>
+                  <label className="text-xs font-semibold text-slate-300 block mb-1">
+                    Limite d'Appareils / IPs
+                  </label>
+                  <select
+                    value={approvalMaxIps}
+                    onChange={(e) => setApprovalMaxIps(Number(e.target.value))}
+                    className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3 py-2 text-xs text-white"
+                  >
+                    <option value={1}>1 Appareil Strict</option>
+                    <option value={2}>2 Appareils</option>
+                    <option value={3}>3 Appareils</option>
+                    <option value={5}>5 Appareils</option>
+                    <option value={0}>Illimité</option>
+                  </select>
+                </div>
+              </div>
+
+              <div className="pt-3 flex items-center justify-end gap-3 border-t border-slate-800">
+                <button
+                  type="button"
+                  onClick={() => setApprovingRequest(null)}
+                  className="px-4 py-2 rounded-xl text-xs font-medium text-slate-400 hover:text-white"
+                >
+                  Annuler
+                </button>
+                <button
+                  type="submit"
+                  disabled={approvalSubmitting}
+                  className="px-5 py-2 rounded-xl bg-gradient-to-r from-emerald-500 to-teal-600 hover:from-emerald-400 hover:to-teal-500 text-slate-950 font-bold text-xs shadow-lg shadow-emerald-500/20 active:scale-95 disabled:opacity-50"
+                >
+                  {approvalSubmitting ? 'Traitement...' : 'Confirmer & Activer dans l’App'}
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {/* ======================================================== */}
+      {/* MODAL: CREATE / EDIT MANUAL USER ACCOUNT */}
+      {/* ======================================================== */}
       {isUserModalOpen && (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-950/80 backdrop-blur-sm animate-in fade-in duration-200">
           <div className="bg-slate-900 border border-slate-800 rounded-2xl w-full max-w-lg p-6 shadow-2xl relative max-h-[90vh] overflow-y-auto">
@@ -1163,10 +1800,10 @@ export default function App() {
 
             <h2 className="text-lg font-bold text-white flex items-center gap-2">
               <UserPlus className="h-5 w-5 text-cyan-400" />
-              {editingUserId ? 'Modifier le Compte VLESS' : 'Créer un Nouveau Compte VLESS'}
+              {editingUserId ? 'Modifier le Compte' : 'Nouveau Compte VLESS & Token'}
             </h2>
             <p className="text-xs text-slate-400 mt-1">
-              Configurez le nom, l'UUID personnalisé, le quota (Mo/Go), l'expiration et la limite d'IP.
+              Définissez le nom, l'UUID personnalisé, le Token pour l'application APK, le quota et la date d'expiration.
             </p>
 
             {formError && (
@@ -1177,14 +1814,13 @@ export default function App() {
             )}
 
             <form onSubmit={handleSaveUser} className="mt-5 space-y-4">
-              {/* Nom / Libellé */}
               <div>
                 <label className="text-xs font-semibold text-slate-300 block mb-1">
-                  Nom ou Identifiant du Compte *
+                  Nom du Compte *
                 </label>
                 <input
                   type="text"
-                  placeholder="ex: Azice, Bureau, Famille, Client-01"
+                  placeholder="ex: Azice, Bureau, Famille"
                   value={formName}
                   onChange={(e) => setFormName(e.target.value)}
                   required
@@ -1192,7 +1828,7 @@ export default function App() {
                 />
               </div>
 
-              {/* UUID Personnalisé ou Aléatoire */}
+              {/* UUID & Token */}
               <div>
                 <div className="flex items-center justify-between mb-1">
                   <label className="text-xs font-semibold text-slate-300">
@@ -1200,7 +1836,7 @@ export default function App() {
                   </label>
                   <button
                     type="button"
-                    onClick={handleGenerateRandomUuid}
+                    onClick={handleGenerateRandomCredentials}
                     className="text-cyan-400 hover:text-cyan-300 text-[11px] flex items-center gap-1 font-medium"
                   >
                     <RefreshCw className="h-3 w-3" />
@@ -1217,8 +1853,22 @@ export default function App() {
                 />
               </div>
 
-              {/* Quota de Connexion (Mo ou Go) */}
-              <div className="p-3.5 bg-slate-950/60 border border-slate-800 rounded-xl space-y-2.5">
+              <div>
+                <label className="text-xs font-semibold text-slate-300 block mb-1">
+                  Token d'Activation (pour l'Application APK) *
+                </label>
+                <input
+                  type="text"
+                  placeholder="NEXUS-VLESS-XXXXXX"
+                  value={formToken}
+                  onChange={(e) => setFormToken(e.target.value)}
+                  required
+                  className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3 py-2 text-xs font-mono text-emerald-300 font-bold focus:outline-none focus:border-cyan-500"
+                />
+              </div>
+
+              {/* Quota */}
+              <div className="p-3.5 bg-slate-950/60 border border-slate-800 rounded-xl space-y-2">
                 <div className="flex items-center justify-between">
                   <label className="text-xs font-semibold text-slate-300 flex items-center gap-1.5">
                     <HardDrive className="h-3.5 w-3.5 text-cyan-400" />
@@ -1229,72 +1879,49 @@ export default function App() {
                       type="checkbox"
                       checked={formIsUnlimitedQuota}
                       onChange={(e) => setFormIsUnlimitedQuota(e.target.checked)}
-                      className="rounded bg-slate-900 border-slate-700 text-cyan-500 focus:ring-0"
+                      className="rounded bg-slate-900 border-slate-700 text-cyan-500"
                     />
                     <span>Illimité</span>
                   </label>
                 </div>
 
                 {!formIsUnlimitedQuota && (
-                  <div>
-                    <div className="flex gap-2">
-                      <input
-                        type="number"
-                        min="1"
-                        step="any"
-                        value={formQuotaValue}
-                        onChange={(e) => setFormQuotaValue(e.target.value)}
-                        placeholder="Ex: 5"
-                        className="flex-1 bg-slate-950 border border-slate-800 rounded-xl px-3 py-1.5 text-xs text-white focus:outline-none focus:border-cyan-500"
-                      />
-                      <div className="flex rounded-xl bg-slate-900 border border-slate-800 p-0.5">
-                        <button
-                          type="button"
-                          onClick={() => setFormQuotaUnit('MO')}
-                          className={`px-3 py-1 text-xs rounded-lg font-medium transition ${
-                            formQuotaUnit === 'MO' ? 'bg-cyan-600 text-white' : 'text-slate-400'
-                          }`}
-                        >
-                          Mo
-                        </button>
-                        <button
-                          type="button"
-                          onClick={() => setFormQuotaUnit('GO')}
-                          className={`px-3 py-1 text-xs rounded-lg font-medium transition ${
-                            formQuotaUnit === 'GO' ? 'bg-cyan-600 text-white' : 'text-slate-400'
-                          }`}
-                        >
-                          Go
-                        </button>
-                      </div>
-                    </div>
-
-                    {/* Pre-set Quick buttons */}
-                    <div className="flex flex-wrap gap-1.5 mt-2">
-                      {['500 Mo', '1 Go', '2 Go', '5 Go', '10 Go', '50 Go', '100 Go'].map((item) => {
-                        const [val, unit] = item.split(' ');
-                        return (
-                          <button
-                            key={item}
-                            type="button"
-                            onClick={() => {
-                              setFormQuotaValue(val);
-                              setFormQuotaUnit(unit.toUpperCase() as 'MO' | 'GO');
-                              setFormIsUnlimitedQuota(false);
-                            }}
-                            className="text-[10px] px-2 py-0.5 rounded bg-slate-900 border border-slate-800 hover:border-slate-700 text-slate-300"
-                          >
-                            {item}
-                          </button>
-                        );
-                      })}
+                  <div className="flex gap-2">
+                    <input
+                      type="number"
+                      min="1"
+                      step="any"
+                      value={formQuotaValue}
+                      onChange={(e) => setFormQuotaValue(e.target.value)}
+                      placeholder="Ex: 5"
+                      className="flex-1 bg-slate-950 border border-slate-800 rounded-xl px-3 py-1.5 text-xs text-white"
+                    />
+                    <div className="flex rounded-xl bg-slate-900 border border-slate-800 p-0.5">
+                      <button
+                        type="button"
+                        onClick={() => setFormQuotaUnit('MO')}
+                        className={`px-3 py-1 text-xs rounded-lg font-medium ${
+                          formQuotaUnit === 'MO' ? 'bg-cyan-600 text-white' : 'text-slate-400'
+                        }`}
+                      >
+                        Mo
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setFormQuotaUnit('GO')}
+                        className={`px-3 py-1 text-xs rounded-lg font-medium ${
+                          formQuotaUnit === 'GO' ? 'bg-cyan-600 text-white' : 'text-slate-400'
+                        }`}
+                      >
+                        Go
+                      </button>
                     </div>
                   </div>
                 )}
               </div>
 
-              {/* Date d'expiration */}
-              <div className="p-3.5 bg-slate-950/60 border border-slate-800 rounded-xl space-y-2.5">
+              {/* Expiration */}
+              <div className="p-3.5 bg-slate-950/60 border border-slate-800 rounded-xl space-y-2">
                 <div className="flex items-center justify-between">
                   <label className="text-xs font-semibold text-slate-300 flex items-center gap-1.5">
                     <Clock className="h-3.5 w-3.5 text-amber-400" />
@@ -1309,7 +1936,7 @@ export default function App() {
                         onChange={() => setFormExpiryType('unlimited')}
                         className="text-cyan-500"
                       />
-                      <span>Jamais (Illimité)</span>
+                      <span>Illimité</span>
                     </label>
                     <label className="flex items-center gap-1.5 text-xs text-slate-300 cursor-pointer">
                       <input
@@ -1325,85 +1952,33 @@ export default function App() {
                 </div>
 
                 {formExpiryType === 'custom' && (
-                  <div>
-                    <input
-                      type="date"
-                      value={formExpiryDate}
-                      onChange={(e) => setFormExpiryDate(e.target.value)}
-                      className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3 py-1.5 text-xs text-white focus:outline-none focus:border-cyan-500"
-                    />
-                    {/* Quick expiry presets */}
-                    <div className="flex flex-wrap gap-1.5 mt-2">
-                      <button
-                        type="button"
-                        onClick={() => setQuickExpiry(7)}
-                        className="text-[10px] px-2 py-0.5 rounded bg-slate-900 border border-slate-800 text-slate-300"
-                      >
-                        +7 Jours
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => setQuickExpiry(30)}
-                        className="text-[10px] px-2 py-0.5 rounded bg-slate-900 border border-slate-800 text-slate-300"
-                      >
-                        +30 Jours
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => setQuickExpiry(90)}
-                        className="text-[10px] px-2 py-0.5 rounded bg-slate-900 border border-slate-800 text-slate-300"
-                      >
-                        +90 Jours
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => setQuickExpiry(365)}
-                        className="text-[10px] px-2 py-0.5 rounded bg-slate-900 border border-slate-800 text-slate-300"
-                      >
-                        +1 An
-                      </button>
-                    </div>
-                  </div>
+                  <input
+                    type="date"
+                    value={formExpiryDate}
+                    onChange={(e) => setFormExpiryDate(e.target.value)}
+                    className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3 py-1.5 text-xs text-white"
+                  />
                 )}
               </div>
 
-              {/* Limite d'IPs simultanées */}
+              {/* Limite IPs */}
               <div>
                 <label className="text-xs font-semibold text-slate-300 block mb-1">
-                  Limite d'IPs / Appareils Connectés Simultanés
+                  Limite d'IPs Simultanées
                 </label>
                 <select
                   value={formMaxIps}
                   onChange={(e) => setFormMaxIps(Number(e.target.value))}
-                  className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3 py-2 text-xs text-white focus:outline-none focus:border-cyan-500"
+                  className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3 py-2 text-xs text-white"
                 >
-                  <option value={0}>Illimité (Toutes les connexions acceptées)</option>
-                  <option value={1}>1 Appareil / IP simultanée (Strict)</option>
-                  <option value={2}>2 Appareils / IPs simultanées</option>
-                  <option value={3}>3 Appareils / IPs simultanées</option>
-                  <option value={5}>5 Appareils / IPs simultanées</option>
-                  <option value={10}>10 Appareils / IPs simultanées</option>
+                  <option value={0}>Illimité</option>
+                  <option value={1}>1 Appareil Strict</option>
+                  <option value={2}>2 Appareils</option>
+                  <option value={3}>3 Appareils</option>
+                  <option value={5}>5 Appareils</option>
                 </select>
-                <span className="text-[10px] text-slate-500 mt-1 block">
-                  Si un utilisateur tente de se connecter avec un appareil supplémentaire dépassant cette limite, la connexion sera automatiquement bloquée.
-                </span>
               </div>
 
-              {/* Notes optionnelles */}
-              <div>
-                <label className="text-xs font-semibold text-slate-300 block mb-1">
-                  Notes ou Remarques (Optionnel)
-                </label>
-                <input
-                  type="text"
-                  placeholder="ex: Abonnement mensuel, ami, téléphone pro..."
-                  value={formNotes}
-                  onChange={(e) => setFormNotes(e.target.value)}
-                  className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3 py-2 text-xs text-slate-200 focus:outline-none focus:border-cyan-500"
-                />
-              </div>
-
-              {/* Submit Buttons */}
               <div className="pt-3 flex items-center justify-end gap-3 border-t border-slate-800">
                 <button
                   type="button"
@@ -1429,7 +2004,9 @@ export default function App() {
         </div>
       )}
 
+      {/* ======================================================== */}
       {/* MODAL: VIEW CONFIG & QR CODE */}
+      {/* ======================================================== */}
       {viewingConfigs && (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-950/80 backdrop-blur-sm animate-in fade-in duration-200">
           <div className="bg-slate-900 border border-slate-800 rounded-2xl w-full max-w-2xl p-6 shadow-2xl relative max-h-[90vh] overflow-y-auto">
@@ -1449,13 +2026,12 @@ export default function App() {
                   Configuration Client : {viewingConfigs.user.name}
                 </h2>
                 <p className="text-xs text-slate-400">
-                  Scannez le QR Code ou copiez la configuration pour importer directement dans votre client.
+                  Scannez le QR Code ou copiez le Token / VLESS URL pour l'importer directement.
                 </p>
               </div>
             </div>
 
             <div className="mt-5 grid grid-cols-1 sm:grid-cols-12 gap-6 items-center">
-              {/* QR Code */}
               <div className="sm:col-span-5 flex flex-col items-center justify-center p-4 bg-slate-950 border border-slate-800 rounded-2xl">
                 <div className="p-2.5 bg-white rounded-xl shadow-lg">
                   <img
@@ -1469,12 +2045,13 @@ export default function App() {
                 </span>
               </div>
 
-              {/* Summary */}
               <div className="sm:col-span-7 space-y-3">
                 <div className="p-3 rounded-xl bg-slate-950/60 border border-slate-800 space-y-1.5 text-xs">
                   <div className="flex justify-between">
-                    <span className="text-slate-400">Protocole :</span>
-                    <span className="font-semibold text-white">VLESS + WebSocket + TLS</span>
+                    <span className="text-slate-400">Token APK :</span>
+                    <span className="font-mono text-emerald-300 font-bold">
+                      {viewingConfigs.user.token}
+                    </span>
                   </div>
                   <div className="flex justify-between">
                     <span className="text-slate-400">UUID Client :</span>
@@ -1496,17 +2073,8 @@ export default function App() {
                         : 'Illimité'}
                     </span>
                   </div>
-                  <div className="flex justify-between">
-                    <span className="text-slate-400">Limite Appareils :</span>
-                    <span className="font-semibold text-white">
-                      {viewingConfigs.user.maxIps > 0
-                        ? `${viewingConfigs.user.maxIps} IP simultanées`
-                        : 'Illimité'}
-                    </span>
-                  </div>
                 </div>
 
-                {/* Direct VLESS URI */}
                 <div>
                   <div className="flex items-center justify-between text-xs mb-1">
                     <span className="text-slate-400 font-medium">Lien direct VLESS URI :</span>
@@ -1514,15 +2082,8 @@ export default function App() {
                       onClick={() => handleCopy(viewingConfigs.vlessUrl, 'modal-vless-url')}
                       className="text-cyan-400 hover:text-cyan-300 text-[11px] flex items-center gap-1"
                     >
-                      {copiedKey === 'modal-vless-url' ? (
-                        <>
-                          <Check className="h-3 w-3 text-emerald-400" /> Copié !
-                        </>
-                      ) : (
-                        <>
-                          <Copy className="h-3 w-3" /> Copier le lien
-                        </>
-                      )}
+                      {copiedKey === 'modal-vless-url' ? <Check className="h-3 w-3 text-emerald-400" /> : <Copy className="h-3 w-3" />}
+                      Copier le lien
                     </button>
                   </div>
                   <textarea
@@ -1535,7 +2096,6 @@ export default function App() {
               </div>
             </div>
 
-            {/* Other Config Formats (Clash, Singbox, v2rayN) */}
             <div className="mt-5 border-t border-slate-800 pt-4">
               <div className="flex items-center justify-between gap-2 mb-2">
                 <div className="flex gap-2">
@@ -1557,7 +2117,7 @@ export default function App() {
                         : 'text-slate-400 hover:bg-slate-800'
                     }`}
                   >
-                    Clash Meta (YAML)
+                    Clash Meta
                   </button>
                   <button
                     onClick={() => setConfigSubTab('singbox')}
@@ -1567,17 +2127,7 @@ export default function App() {
                         : 'text-slate-400 hover:bg-slate-800'
                     }`}
                   >
-                    Sing-box (JSON)
-                  </button>
-                  <button
-                    onClick={() => setConfigSubTab('v2rayn')}
-                    className={`px-3 py-1 rounded-lg text-xs font-medium transition ${
-                      configSubTab === 'v2rayn'
-                        ? 'bg-cyan-500/20 text-cyan-300 border border-cyan-500/30'
-                        : 'text-slate-400 hover:bg-slate-800'
-                    }`}
-                  >
-                    v2rayN
+                    Sing-box
                   </button>
                 </div>
 
@@ -1588,22 +2138,13 @@ export default function App() {
                         ? viewingConfigs.vlessUrl
                         : configSubTab === 'clash'
                         ? viewingConfigs.formats.clash
-                        : configSubTab === 'singbox'
-                        ? viewingConfigs.formats.singbox
-                        : viewingConfigs.formats.v2rayN;
+                        : viewingConfigs.formats.singbox;
                     handleCopy(str, 'subtab-copy');
                   }}
                   className="text-xs text-cyan-400 hover:text-cyan-300 flex items-center gap-1"
                 >
-                  {copiedKey === 'subtab-copy' ? (
-                    <>
-                      <Check className="h-3 w-3 text-emerald-400" /> Copié !
-                    </>
-                  ) : (
-                    <>
-                      <Copy className="h-3 w-3" /> Copier
-                    </>
-                  )}
+                  {copiedKey === 'subtab-copy' ? <Check className="h-3 w-3 text-emerald-400" /> : <Copy className="h-3 w-3" />}
+                  Copier
                 </button>
               </div>
 
@@ -1611,7 +2152,6 @@ export default function App() {
                 {configSubTab === 'vless' && viewingConfigs.vlessUrl}
                 {configSubTab === 'clash' && viewingConfigs.formats.clash}
                 {configSubTab === 'singbox' && viewingConfigs.formats.singbox}
-                {configSubTab === 'v2rayn' && viewingConfigs.formats.v2rayN}
               </pre>
             </div>
           </div>

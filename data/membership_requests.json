@@ -1,0 +1,19 @@
+[
+  {
+    "id": "req_kpzud9n",
+    "fullName": "Tchinda Azice",
+    "country": "Cameroun",
+    "countryCode": "CM",
+    "channel": "WHATSAPP",
+    "contactDetail": "+237690123456",
+    "deviceId": "dev_test_samsung_s22",
+    "deviceModel": "Samsung Galaxy S22 Ultra",
+    "androidVersion": "14",
+    "timestamp": 1729000000000,
+    "createdAt": "2026-10-15T18:15:42.066Z",
+    "status": "APPROVED",
+    "approvedUserId": "usr_adyffaw",
+    "assignedToken": "NEXUS-VLESS-FNLVMFLN",
+    "reviewedAt": "2026-10-15T18:16:12.421Z"
+  }
+]
